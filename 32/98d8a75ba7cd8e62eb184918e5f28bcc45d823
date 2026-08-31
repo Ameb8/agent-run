@@ -1,0 +1,20 @@
+docs/specs/agent-run.md
+  s_86c82ddef1bc24::t_72c4af5c5de620 479
+  s_86c82ddef1bc24::t_4b5552ce1b4f02 37-45,120,137-146,385,470-477,526
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.4.12",
+  "base_commit_sha": "3298d8a75ba7cd8e62eb184918e5f28bcc45d823",
+  "prompts": {},
+  "sessions": {
+    "s_86c82ddef1bc24": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0570b-f69e-7d91-8d97-ca99b23f700b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Alex Buckley <alexmeb81@outlook.com>"
+    }
+  }
+}
