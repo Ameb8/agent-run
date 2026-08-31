@@ -34,7 +34,15 @@ AgentRun is implemented in Go.
 
 This spec concerns itself only with the CLI. There is no in-process library interface — orchestrators, daemons, and other long-running callers invoke AgentRun as a subprocess and parse its stdout JSON result, the same as any other caller. This is a narrower scope than earlier drafts of this spec, which pursued a Python implementation specifically to support a zero-overhead in-process `from agentrun import load_agent, run` call for Python-based orchestrators.
 
-That tradeoff is reversed here. A single static binary is the priority: trivial distribution (`go install`, a release binary dropped in `$PATH`, no interpreter or virtualenv to provision), fast process-spawn/startup latency, and no runtime dependency for callers regardless of what language they're written in. The in-process ergonomics Python offered were specific to Python callers; a compiled CLI serves callers in any language identically, via the same stdout contract every caller already needs to support.
+That tradeoff is reversed here. A self-contained installation is the priority: callers install AgentRun once and do not separately install, select, upgrade, or configure the underlying coding-agent runtime. The distribution may be a single static binary when the pi runtime can be embedded, or a platform-specific bundle containing the Go binary and its private runtime. This packaging detail is not part of the caller contract. In either form, no interpreter, system pi installation, or independently provisioned runtime is required on the caller's side. The in-process ergonomics Python offered were specific to Python callers; a compiled CLI serves callers in any language identically, via the same stdout contract every caller already needs to support.
+
+### 4.1 Runtime and Installation Ownership
+
+AgentRun owns and distributes the pi runtime used to execute agents. Every AgentRun release pins a compatible pi version and invokes that version exclusively. It never searches `PATH` for pi, adopts a project-local pi installation, or falls back to a user-managed pi runtime. Upgrading AgentRun is the only supported way to upgrade the pi version used by AgentRun, so the adapter and runtime can be tested and versioned together.
+
+Users therefore install AgentRun once, establish authentication once for each provider account they intend to use, and may then define and run any number of agents. Agent definitions still select their model, skills, tools, and permissions, but creating an agent does not require another pi installation or an independent pi configuration.
+
+AgentRun constructs a fresh pi configuration for each run from the resolved agent definition. This generated configuration is ephemeral and isolated: it does not modify pi's global settings and does not inherit global or project-local pi resources. `agentrun version` reports both the AgentRun version and its bundled pi version. `agentrun doctor` verifies that the bundled runtime, sandbox facilities, and configured authentication are usable without changing them.
 
 Language-specific SDKs/libraries that wrap the CLI (subprocess invocation, JSON parsing, typed results) are an explicit non-goal of this spec (§3) and may be built as separate, later, per-language projects on top of the CLI contract defined here — mirroring how callers like graph orchestrators are themselves built on top of AgentRun rather than inside it.
 
@@ -109,7 +117,7 @@ limits:
 |---|---|---|
 | `name` | yes | Unique identifier for the agent. Used for resolution (§8). |
 | `description` | no | Human-readable summary. |
-| `model.provider` | yes | `openai-compatible` (arbitrary endpoint + API key) or `openai-subscription` (uses an existing subscription-based auth, no endpoint/key needed). |
+| `model.provider` | yes | `openai-compatible` (arbitrary endpoint + API key) or `openai-subscription` (uses AgentRun-managed user authentication established once for that provider account; no per-agent endpoint/key needed). |
 | `model.endpoint` | if `openai-compatible` | Base URL of the model API. |
 | `model.model` | yes | Model identifier passed to the provider. |
 | `model.api_key_env` | if `openai-compatible` | Name of the environment variable holding the API key. AgentRun never accepts raw keys in config files. |
@@ -125,6 +133,16 @@ limits:
 | `prompt.inputs.optional` | no | Named inputs exposed to the template when supplied. Missing optional inputs render as empty values, allowing conditional template branches. |
 | `limits.max_turns` | no | Upper bound on agent tool-use turns before AgentRun forces termination and reports `FAILURE`. |
 | `limits.timeout_s` | no | Wall-clock timeout in seconds. |
+
+### 6.1.1 Provider Authentication
+
+Authentication belongs to the AgentRun installation and user, not to an individual agent definition or ephemeral pi configuration.
+
+- For `openai-subscription`, the user authenticates through `agentrun auth login openai-subscription`. AgentRun stores the resulting credential in an OS-appropriate protected user credential store and makes it available only as the model credential for runs selecting that provider. Any number of agents may reuse that authentication. Raw subscription credentials never appear in agent definitions or generated pi configuration files.
+- For `openai-compatible`, the definition names an environment variable in `model.api_key_env`. Multiple agents may name the same variable, so the caller supplies a provider credential once in its environment or secret manager rather than configuring each agent separately. AgentRun reads the value immediately before the run and injects it only as the model credential.
+- Agent definitions choose which provider and model to use; they cannot embed, create, overwrite, or select arbitrary stored secret values.
+
+Logging out or replacing a stored provider credential affects subsequent runs using that provider account, not agent definitions. Authentication material must be redacted from logs, diagnostics, results, and rendered configuration.
 
 ### 6.2 Prompt Templates
 
@@ -364,7 +382,7 @@ AgentRun does not trust the underlying agent process to respect `read-only` on i
 2. Resolve package-local skills and extension entry points, then structurally validate the definition, policies, and supplied inputs (§6.3–§6.7).
 3. Render the prompt template with supplied inputs.
 4. Prepare a fresh isolated execution environment: mount the workspace per `permission`, establish the network policy, inject the model credential and explicitly allowlisted environment variables, and disable pi's global and project resource auto-discovery.
-5. Start the underlying coding agent process with only the selected skill bundles and declared extensions. Load the extensions inside the isolated environment, collect their registered tool names, reject duplicates or unknown allowed names, and activate exactly `tools.allow`.
+5. Start AgentRun's pinned, bundled pi runtime with only the selected skill bundles and declared extensions. Load the extensions inside the isolated environment, collect their registered tool names, reject duplicates or unknown allowed names, and activate exactly `tools.allow`.
 6. Run the rendered prompt subject to `limits.max_turns` and `limits.timeout_s`.
 7. Capture the agent's output and exit status.
 8. Emit a single JSON result object to stdout (§7.3).
@@ -449,7 +467,16 @@ agentrun run <agent-name-or-path> \
 
 Exit code `0` on `SUCCESS`, nonzero on `FAILURE` or a validation/setup error prior to running. All nonzero paths still emit a `FAILURE`-shaped JSON object to stdout where possible (e.g. validation errors), so callers can rely on stdout parsing rather than branching on exit code semantics.
 
-Distributed as a single static Go binary (e.g. via `go install`, or a release binary dropped in `$PATH`) — no runtime or interpreter provisioning required on the caller's side.
+Supporting installation-management commands are:
+
+```text
+agentrun auth login openai-subscription
+agentrun auth logout openai-subscription
+agentrun version
+agentrun doctor
+```
+
+AgentRun is distributed as a self-contained, versioned installation. A release may be a single binary or a bundle with a private runtime, but users never install pi separately and AgentRun never depends on a `pi` executable from `PATH`.
 
 ## 9. Why AgentRun Has No Retry, Block, or Escalation States
 
@@ -496,3 +523,4 @@ fi
 - **Resolved — path-scoped permissions:** Path-scoped permissions are deferred beyond v1. If introduced, they should be modeled as explicit workspace-relative mounts with a default access mode, not as glob rules. Paths must be canonicalized, remain within the workspace after symlink resolution, and reject traversal. Overlap and precedence semantics must be specified before this feature is added.
 - **Resolved — streaming and partial output:** Machine-readable streaming and diagnostic partial output are deferred beyond v1 under the compatibility requirements in §7.4.
 - **Resolved — language SDKs:** Per-language SDKs remain separate projects outside this specification. They should be considered only after real callers demonstrate recurring subprocess, platform, or schema-versioning needs, and must remain thin wrappers without orchestration policy.
+- **Resolved — runtime and installation ownership:** AgentRun owns, pins, and distributes its pi runtime. Users install AgentRun and authenticate each provider account once; individual agents reuse that installation and authentication while receiving fresh generated pi configuration for every run (§4.1, §6.1.1).
