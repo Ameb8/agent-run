@@ -59,8 +59,10 @@ func (d DockerInspector) LocalImageDigests(ctx context.Context, image string) ([
 }
 
 const (
-	workspaceMount = "/workspace"
-	resourcesMount = "/agentrun/resources"
+	workspaceMount     = "/workspace"
+	resourcesMount     = "/agentrun/resources"
+	configurationMount = "/agentrun/config"
+	temporaryMount     = "/agentrun/tmp"
 )
 
 // SandboxRequest contains the already-resolved, immutable paths that may be
@@ -69,6 +71,8 @@ const (
 type SandboxRequest struct {
 	Workspace        string
 	Resources        string
+	Configuration    string
+	Temporary        string
 	Permission       contract.Permission
 	WorkspacePackage bool
 	Command          []string
@@ -126,11 +130,11 @@ func (s DockerSandbox) Create(ctx context.Context, request SandboxRequest) (Cont
 	if err := s.verifyEngine(ctx); err != nil {
 		return Container{}, err
 	}
-	workspace, resources, err := canonicalSandboxPaths(request)
+	workspace, resources, configuration, temporary, err := canonicalSandboxPaths(request)
 	if err != nil {
 		return Container{}, err
 	}
-	args, err := s.createArgs(workspace, resources, request)
+	args, err := s.createArgs(workspace, resources, configuration, temporary, request)
 	if err != nil {
 		return Container{}, err
 	}
@@ -179,25 +183,42 @@ func supportsNonRecursiveBind(version string) bool {
 	return majorErr == nil && minorErr == nil && (major > 1 || major == 1 && minor >= 45)
 }
 
-func canonicalSandboxPaths(request SandboxRequest) (string, string, error) {
+func canonicalSandboxPaths(request SandboxRequest) (string, string, string, string, error) {
 	if request.Permission != contract.PermissionReadOnly && request.Permission != contract.PermissionReadWrite {
-		return "", "", configurationError("sandbox permission is invalid")
+		return "", "", "", "", configurationError("sandbox permission is invalid")
 	}
 	if len(request.Command) == 0 {
-		return "", "", configurationError("sandbox command is required")
+		return "", "", "", "", configurationError("sandbox command is required")
 	}
 	workspace, err := canonicalDirectory(request.Workspace)
 	if err != nil {
-		return "", "", configurationError("workspace: %v", err)
+		return "", "", "", "", configurationError("workspace: %v", err)
 	}
 	resources, err := canonicalDirectory(request.Resources)
 	if err != nil {
-		return "", "", configurationError("selected resource snapshot: %v", err)
+		return "", "", "", "", configurationError("selected resource snapshot: %v", err)
 	}
-	if workspace == resources {
-		return "", "", configurationError("workspace and selected resource snapshot must be separate")
+	configuration, err := canonicalDirectory(request.Configuration)
+	if err != nil {
+		return "", "", "", "", configurationError("generated configuration: %v", err)
 	}
-	return workspace, resources, nil
+	temporary, err := canonicalDirectory(request.Temporary)
+	if err != nil {
+		return "", "", "", "", configurationError("private temporary storage: %v", err)
+	}
+	paths := []string{workspace, resources, configuration, temporary}
+	for i, path := range paths {
+		for _, other := range paths[i+1:] {
+			if overlappingPaths(path, other) {
+				return "", "", "", "", configurationError("workspace, resources, configuration, and temporary storage must be separate")
+			}
+		}
+	}
+	return workspace, resources, configuration, temporary, nil
+}
+
+func overlappingPaths(left, right string) bool {
+	return left == right || strings.HasPrefix(left, right+string(filepath.Separator)) || strings.HasPrefix(right, left+string(filepath.Separator))
 }
 
 func canonicalDirectory(path string) (string, error) {
@@ -229,7 +250,7 @@ func canonicalDirectory(path string) (string, error) {
 	return path, nil
 }
 
-func (s DockerSandbox) createArgs(workspace, resources string, request SandboxRequest) ([]string, error) {
+func (s DockerSandbox) createArgs(workspace, resources, configuration, temporary string, request SandboxRequest) ([]string, error) {
 	workspaceOptions := "type=bind,src=" + workspace + ",dst=" + workspaceMount + ",bind-propagation=rprivate,bind-recursive=disabled"
 	if request.Permission == contract.PermissionReadOnly {
 		workspaceOptions += ",readonly"
@@ -241,6 +262,8 @@ func (s DockerSandbox) createArgs(workspace, resources string, request SandboxRe
 		"--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m",
 		"--mount", workspaceOptions,
 		"--mount", "type=bind,src=" + resources + ",dst=" + resourcesMount + ",readonly,bind-propagation=rprivate,bind-recursive=disabled",
+		"--mount", "type=bind,src=" + configuration + ",dst=" + configurationMount + ",readonly,bind-propagation=rprivate,bind-recursive=disabled",
+		"--mount", "type=bind,src=" + temporary + ",dst=" + temporaryMount + ",bind-propagation=rprivate,bind-recursive=disabled",
 	}
 	if request.WorkspacePackage {
 		args = append(args, "--mount", "type=tmpfs,dst=/workspace/.agentrun,tmpfs-mode=0755")

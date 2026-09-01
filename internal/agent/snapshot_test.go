@@ -49,6 +49,28 @@ func TestSnapshotIsImmutableAndSelectsOnlyPackageResources(t *testing.T) {
 	}
 }
 
+func TestSnapshotCanBeStagedInItsRunPrivateParent(t *testing.T) {
+	f := newDefinitionFixture(t)
+	f.write("prompts/main.tmpl", "original")
+	f.definition(validDefinition())
+	parent := t.TempDir()
+	snapshot, err := CreateSnapshotIn(f.resolution(), parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	if filepath.Dir(snapshot.Root) != parent {
+		t.Fatalf("snapshot root %q is not below private parent %q", snapshot.Root, parent)
+	}
+	if err := os.WriteFile(f.path("prompts/main.tmpl"), []byte("mutated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(snapshot.Definition.PromptTemplate)
+	if err != nil || string(contents) != "original" {
+		t.Fatalf("staged snapshot prompt = %q, %v", contents, err)
+	}
+}
+
 func TestSnapshotDigestIncludesSelectedResourcesButNotUnselectedFiles(t *testing.T) {
 	makeSnapshot := func(prompt, ignored string) *Snapshot {
 		t.Helper()

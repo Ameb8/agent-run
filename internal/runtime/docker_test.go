@@ -36,7 +36,9 @@ func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	resources := filepath.Join(root, "resources")
-	for _, path := range []string{workspace, resources} {
+	configuration := filepath.Join(root, "config")
+	temporary := filepath.Join(root, "tmp")
+	for _, path := range []string{workspace, resources, configuration, temporary} {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +50,7 @@ func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
 		goos:     "linux",
 	}
 	container, err := sandbox.Create(context.Background(), SandboxRequest{
-		Workspace: workspace, Resources: resources, Permission: contract.PermissionReadOnly,
+		Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: temporary, Permission: contract.PermissionReadOnly,
 		WorkspacePackage: true, Command: []string{"pi", "--help"},
 	})
 	if err != nil {
@@ -63,6 +65,8 @@ func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
 		"create --pull=never --network none --read-only", "--cap-drop ALL", "--security-opt no-new-privileges:true",
 		"--pids-limit 256", "bind-propagation=rprivate,bind-recursive=disabled,readonly",
 		"dst=/agentrun/resources,readonly,bind-propagation=rprivate,bind-recursive=disabled",
+		"dst=/agentrun/config,readonly,bind-propagation=rprivate,bind-recursive=disabled",
+		"dst=/agentrun/tmp,bind-propagation=rprivate,bind-recursive=disabled",
 		"type=tmpfs,dst=/workspace/.agentrun,tmpfs-mode=0755", "--tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m",
 	} {
 		if !strings.Contains(got, required) {
@@ -85,7 +89,9 @@ func TestDockerSandboxFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	resources := filepath.Join(root, "resources")
-	for _, path := range []string{workspace, resources} {
+	configuration := filepath.Join(root, "config")
+	temporary := filepath.Join(root, "tmp")
+	for _, path := range []string{workspace, resources, configuration, temporary} {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +108,7 @@ func TestDockerSandboxFailsClosed(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: test.runner, goos: test.goos}
-			_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
+			_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: temporary, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
 			var commandError *contract.CommandError
 			if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
 				t.Fatalf("Create() error = %v, want CONFIGURATION", err)
@@ -116,14 +122,16 @@ func TestDockerSandboxRejectsMountOptionInjectionPaths(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace,readonly=false")
 	resources := filepath.Join(root, "resources")
-	for _, path := range []string{workspace, resources} {
+	configuration := filepath.Join(root, "config")
+	temporary := filepath.Join(root, "tmp")
+	for _, path := range []string{workspace, resources, configuration, temporary} {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	runner := &sandboxRunner{}
 	sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: runner, goos: "linux"}
-	_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
+	_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: temporary, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
 	var commandError *contract.CommandError
 	if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
 		t.Fatalf("Create() error = %v, want CONFIGURATION", err)
@@ -135,19 +143,52 @@ func TestDockerSandboxRejectsMountOptionInjectionPaths(t *testing.T) {
 	}
 }
 
+func TestDockerSandboxRejectsMissingOrOverlappingRunPaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	resources := filepath.Join(root, "resources")
+	configuration := filepath.Join(root, "config")
+	temporary := filepath.Join(root, "tmp")
+	for _, path := range []string{workspace, resources, configuration, temporary} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, request := range []SandboxRequest{
+		{Workspace: workspace, Resources: resources, Temporary: temporary, Permission: contract.PermissionReadOnly, Command: []string{"pi"}},
+		{Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: workspace, Permission: contract.PermissionReadOnly, Command: []string{"pi"}},
+	} {
+		runner := &sandboxRunner{}
+		sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: runner, goos: "linux"}
+		_, err := sandbox.Create(context.Background(), request)
+		var commandError *contract.CommandError
+		if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
+			t.Fatalf("Create() error = %v, want CONFIGURATION", err)
+		}
+		for _, call := range runner.calls {
+			if len(call.args) > 0 && call.args[0] == "create" {
+				t.Fatal("Docker create was called for invalid run paths")
+			}
+		}
+	}
+}
+
 func TestDockerSandboxDerivesWorkspaceMountModeOnlyFromPermission(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	resources := filepath.Join(root, "resources")
-	for _, path := range []string{workspace, resources} {
+	configuration := filepath.Join(root, "config")
+	temporary := filepath.Join(root, "tmp")
+	for _, path := range []string{workspace, resources, configuration, temporary} {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest()}, goos: "linux"}
 	for _, permission := range []contract.Permission{contract.PermissionReadOnly, contract.PermissionReadWrite} {
-		args, err := sandbox.createArgs(workspace, resources, SandboxRequest{Permission: permission, Command: []string{"pi"}})
+		args, err := sandbox.createArgs(workspace, resources, configuration, temporary, SandboxRequest{Permission: permission, Command: []string{"pi"}})
 		if err != nil {
 			t.Fatal(err)
 		}

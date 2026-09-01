@@ -26,6 +26,9 @@ func (s *Snapshot) Close() error {
 	if s == nil || s.Root == "" {
 		return nil
 	}
+	if err := makeRemovable(s.Root); err != nil {
+		return fmt.Errorf("prepare agent snapshot cleanup: %w", err)
+	}
 	err := os.RemoveAll(s.Root)
 	s.Root = ""
 	return err
@@ -40,6 +43,20 @@ type snapshotFile struct {
 // CreateSnapshot copies exactly the selected resources. Symlink targets are
 // read under their selected package-relative names and must remain contained.
 func CreateSnapshot(resolution Resolution) (*Snapshot, error) {
+	return createSnapshot(resolution, "")
+}
+
+// CreateSnapshotIn stages a snapshot below parent. Parent is expected to be a
+// private per-run directory owned by the caller. This lets an execution scope
+// own the snapshot and all of its other ephemeral state with one cleanup.
+func CreateSnapshotIn(resolution Resolution, parent string) (*Snapshot, error) {
+	if parent == "" {
+		return nil, fmt.Errorf("create agent snapshot: parent directory is required")
+	}
+	return createSnapshot(resolution, parent)
+}
+
+func createSnapshot(resolution Resolution, parent string) (*Snapshot, error) {
 	definition, err := ParseAndValidate(resolution)
 	if err != nil {
 		return nil, err
@@ -48,11 +65,15 @@ func CreateSnapshot(resolution Resolution) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.MkdirTemp("", "agentrun-agent-")
+	root, err := os.MkdirTemp(parent, "agentrun-agent-")
 	if err != nil {
 		return nil, fmt.Errorf("create agent snapshot: %w", err)
 	}
-	fail := func(err error) (*Snapshot, error) { _ = os.RemoveAll(root); return nil, err }
+	fail := func(err error) (*Snapshot, error) {
+		_ = makeRemovable(root)
+		_ = os.RemoveAll(root)
+		return nil, err
+	}
 	for _, file := range files {
 		path := filepath.Join(root, filepath.FromSlash(file.path))
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -231,6 +252,21 @@ func makeReadOnly(root string) error {
 			return os.Chmod(path, 0o500)
 		}
 		return os.Chmod(path, 0o400)
+	})
+}
+
+// makeRemovable restores directory write bits before cleanup. A read-only
+// snapshot intentionally prevents mutation while in use, but POSIX requires
+// write permission on every containing directory to unlink its entries.
+func makeRemovable(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, 0o700)
+		}
+		return nil
 	})
 }
 

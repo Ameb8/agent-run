@@ -111,7 +111,16 @@ func (a *App) run(args []string) error {
 		}
 		filtered = append(filtered, args[i])
 	}
-	_, snapshot, err := snapshotFromArgs(filtered)
+	resolution, err := resolveFromArgs(filtered)
+	if err != nil {
+		return err
+	}
+	scope, err := agentruntime.NewRunScope()
+	if err != nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: fmt.Sprintf("private run storage: %v", err)}
+	}
+	defer scope.Close()
+	snapshot, err := agent.CreateSnapshotIn(resolution, scope.Resources)
 	if err != nil {
 		return err
 	}
@@ -271,30 +280,7 @@ func (a *App) inspect(args []string) error {
 }
 
 func snapshotFromArgs(args []string) (agent.Resolution, *agent.Snapshot, error) {
-	if len(args) < 3 {
-		return agent.Resolution{}, nil, validationError("usage: <agent-name-or-path> --workspace <path>")
-	}
-	selection := args[0]
-	workspace := ""
-	allow := false
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "--workspace":
-			if i+1 >= len(args) {
-				return agent.Resolution{}, nil, validationError("--workspace requires a path")
-			}
-			i++
-			workspace = args[i]
-		case "--allow-workspace-agent":
-			allow = true
-		default:
-			return agent.Resolution{}, nil, validationError("unknown option %q", args[i])
-		}
-	}
-	if workspace == "" {
-		return agent.Resolution{}, nil, validationError("--workspace is required")
-	}
-	resolution, err := agent.Resolve(agent.ResolveOptions{Workspace: workspace, Selection: selection, AllowWorkspaceAgent: allow})
+	resolution, err := resolveFromArgs(args)
 	if err != nil {
 		return agent.Resolution{}, nil, err
 	}
@@ -303,6 +289,37 @@ func snapshotFromArgs(args []string) (agent.Resolution, *agent.Snapshot, error) 
 		return agent.Resolution{}, nil, err
 	}
 	return resolution, snapshot, nil
+}
+
+func resolveFromArgs(args []string) (agent.Resolution, error) {
+	if len(args) < 3 {
+		return agent.Resolution{}, validationError("usage: <agent-name-or-path> --workspace <path>")
+	}
+	selection := args[0]
+	workspace := ""
+	allow := false
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--workspace":
+			if i+1 >= len(args) {
+				return agent.Resolution{}, validationError("--workspace requires a path")
+			}
+			i++
+			workspace = args[i]
+		case "--allow-workspace-agent":
+			allow = true
+		default:
+			return agent.Resolution{}, validationError("unknown option %q", args[i])
+		}
+	}
+	if workspace == "" {
+		return agent.Resolution{}, validationError("--workspace is required")
+	}
+	resolution, err := agent.Resolve(agent.ResolveOptions{Workspace: workspace, Selection: selection, AllowWorkspaceAgent: allow})
+	if err != nil {
+		return agent.Resolution{}, err
+	}
+	return resolution, nil
 }
 
 func snapshotResources(root string) ([]string, error) {
