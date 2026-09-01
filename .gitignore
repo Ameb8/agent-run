@@ -1,0 +1,45 @@
+# Go build, test, coverage, and workspace artifacts.
+/agentrun
+/bin/
+/dist/
+*.exe
+*.test
+*.prof
+*.coverprofile
+/coverage.out
+/coverage.html
+/go.work
+/go.work.sum
+
+# Go tooling and analysis caches kept in the repository tree.
+/.cache/
+/.golangci.cache/
+
+# Editor and operating-system metadata.
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Developer-local configuration and credentials. Keep documented examples visible.
+.env
+.env.*
+!.env.example
+!.env.*.example
+/.credentials/
+/credentials.json
+/credentials.local.json
+/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Ephemeral AgentRun data. Agent definitions and package resources under
+# .agentrun/ remain reviewable and must be committed normally.
+/.agentrun/cache/
+/.agentrun/runs/
+/.agentrun/tmp/
