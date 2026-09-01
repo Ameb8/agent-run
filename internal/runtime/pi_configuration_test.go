@@ -87,6 +87,59 @@ func TestGeneratePiConfigurationIsPrivatePerRun(t *testing.T) {
 	}
 }
 
+func TestPiConfigurationActivatesExactlyDeclaredBuiltIns(t *testing.T) {
+	scope, snapshot := piConfigurationFixture(t, nil, false, "read", "grep", "shell")
+	defer scope.Close()
+	defer snapshot.Close()
+
+	configuration, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := configuration.ActiveTools, []string{"read", "grep", "shell"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("active tools = %q, want %q", got, want)
+	}
+	if configuration.ToolAdapter != "/agentrun/config/pi/agentrun-tools.ts" {
+		t.Fatalf("tool adapter = %q", configuration.ToolAdapter)
+	}
+	adapter, err := os.ReadFile(filepath.Join(scope.Configuration, "pi", piToolAdapterFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(adapter), "name: \"shell\"") || !strings.Contains(string(adapter), "createBashTool") {
+		t.Fatalf("adapter does not adapt Pi bash to stable shell: %s", adapter)
+	}
+	command := strings.Join(configuration.Command(), "\x00")
+	for _, required := range []string{"--no-tools", "--no-extensions", "--extension\x00/agentrun/config/pi/agentrun-tools.ts", "--tools\x00read,grep,shell"} {
+		if !strings.Contains(command, required) {
+			t.Errorf("command missing %q: %q", required, configuration.Command())
+		}
+	}
+	for _, argument := range configuration.Command() {
+		if argument == "find" || argument == "ls" || argument == "bash" || argument == "write" || argument == "edit" {
+			t.Errorf("command exposes undeclared tool %q: %q", argument, configuration.Command())
+		}
+	}
+}
+
+func TestPiConfigurationEmptyAllowlistExposesNoTools(t *testing.T) {
+	scope, snapshot := piConfigurationFixture(t, nil, false)
+	defer scope.Close()
+	defer snapshot.Close()
+
+	configuration, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configuration.ActiveTools) != 0 || configuration.ToolAdapter != "" {
+		t.Fatalf("empty allowlist configuration = %#v", configuration)
+	}
+	command := strings.Join(configuration.Command(), "\x00")
+	if strings.Contains(command, "--tools") || strings.Contains(command, "--extension") || !strings.Contains(command, "--no-tools") {
+		t.Fatalf("empty allowlist command = %q", configuration.Command())
+	}
+}
+
 func TestGeneratePiConfigurationRejectsSnapshotOutsideMountedResources(t *testing.T) {
 	scope, snapshot := piConfigurationFixture(t, []string{"first"}, false)
 	defer scope.Close()
@@ -97,7 +150,7 @@ func TestGeneratePiConfigurationRejectsSnapshotOutsideMountedResources(t *testin
 	}
 }
 
-func piConfigurationFixture(t *testing.T, skills []string, schema bool) (*RunScope, *agent.Snapshot) {
+func piConfigurationFixture(t *testing.T, skills []string, schema bool, tools ...string) (*RunScope, *agent.Snapshot) {
 	t.Helper()
 	scope, err := NewRunScope()
 	if err != nil {
@@ -118,6 +171,9 @@ func piConfigurationFixture(t *testing.T, skills []string, schema bool) (*RunSco
 		}
 	}
 	definition := "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-subscription\n  model: test\nskills: [" + strings.Join(skills, ", ") + "]\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n"
+	if len(tools) != 0 {
+		definition += "tools:\n  allow: [" + strings.Join(tools, ", ") + "]\n"
+	}
 	if schema {
 		if err := os.WriteFile(filepath.Join(root, "schema.json"), []byte(`{"type":"object"}`), 0o600); err != nil {
 			t.Fatal(err)

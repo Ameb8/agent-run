@@ -90,6 +90,8 @@ func TestParseAndValidateRejectsInvalidDefinitions(t *testing.T) {
 		{"duplicate input", "prompt:\n  template: prompts/main.tmpl\n  inputs:\n    required: [issue, issue]\n", "duplicate"},
 		{"overlapping input", "prompt:\n  template: prompts/main.tmpl\n  inputs:\n    required: [issue]\n    optional: [issue]\n", "both"},
 		{"readonly write", "tools:\n  allow: [write]\n", "read-only"},
+		{"readonly edit", "tools:\n  allow: [edit]\n", "read-only"},
+		{"unknown builtin without extension", "tools:\n  allow: [not_a_tool]\n", "not a v1 built-in"},
 		{"nonpositive limits", "limits:\n  max_turns: -1\n", "positive"},
 		{"zero limits", "limits:\n  timeout_s: 0\n", "positive"},
 	}

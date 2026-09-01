@@ -15,7 +15,22 @@ const (
 	piSettingsFile        = "settings.json"
 	piCodingAgentDir      = "PI_CODING_AGENT_DIR"
 	piCodingAgentSessions = "PI_CODING_AGENT_SESSION_DIR"
+	piToolAdapterFile     = "agentrun-tools.ts"
 )
+
+// stableToolAdapter adapts the one Pi built-in whose upstream name is not part
+// of AgentRun's v1 contract. Keeping this extension generated and run-local
+// prevents a workspace or user Pi configuration from adding tools or changing
+// their names. The implementation delegates to Pi's pinned built-in, so its
+// non-interactive shell behavior and error results remain intact.
+const stableToolAdapter = `import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  const bash = createBashTool("/workspace");
+  pi.registerTool({ ...bash, name: "shell", label: "shell" });
+}
+`
 
 // PiConfiguration is the complete, run-local resource contract passed to the
 // pinned Pi CLI.  It deliberately contains no model credential, caller
@@ -27,6 +42,8 @@ type PiConfiguration struct {
 	Skills         []string
 	PromptTemplate string
 	OutputSchema   string
+	ActiveTools    []string
+	ToolAdapter    string
 }
 
 // GeneratePiConfiguration writes the otherwise-empty Pi settings file and
@@ -108,6 +125,22 @@ func GeneratePiConfiguration(configuration, temporary, resources string, snapsho
 		}
 		result.Skills = append(result.Skills, containerPath)
 	}
+	for _, name := range snapshot.Definition.Agent.Tools.Allow {
+		if !agent.IsBuiltInTool(name) {
+			// Extension tool registration is deliberately a later runtime phase.
+			// Do not let Pi silently enable an unknown tool before that phase has
+			// validated it and loaded its explicitly selected extension.
+			return PiConfiguration{}, configurationError("tool %q is not an activated v1 built-in", name)
+		}
+		result.ActiveTools = append(result.ActiveTools, name)
+	}
+	if containsTool(result.ActiveTools, "shell") {
+		adapter := filepath.Join(agentDirectory, piToolAdapterFile)
+		if err := os.WriteFile(adapter, []byte(stableToolAdapter), 0o600); err != nil {
+			return PiConfiguration{}, configurationError("write stable tool adapter: %v", err)
+		}
+		result.ToolAdapter = filepath.ToSlash(filepath.Join(configurationMount, "pi", piToolAdapterFile))
+	}
 	return result, nil
 }
 
@@ -122,13 +155,29 @@ func (c PiConfiguration) Environment() []string {
 // The explicit paths remain effective with --no-skills; all global and project
 // resource discovery (including AGENTS.md) is disabled.
 func (c PiConfiguration) Command() []string {
-	// Start with no tools. The later tool adapter may add only the definition's
-	// validated allowlist; a skill is never a source of tool activation.
+	// Start with no tools, then use Pi's explicit allowlist. This means an empty
+	// list stays empty and Pi additions such as find, ls, or bash never become
+	// AgentRun capabilities by default.
 	command := []string{"pi", "--mode", "rpc", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"}
+	if c.ToolAdapter != "" {
+		command = append(command, "--extension", c.ToolAdapter)
+	}
+	if len(c.ActiveTools) != 0 {
+		command = append(command, "--tools", strings.Join(c.ActiveTools, ","))
+	}
 	for _, skill := range c.Skills {
 		command = append(command, "--skill", skill)
 	}
 	return command
+}
+
+func containsTool(tools []string, name string) bool {
+	for _, tool := range tools {
+		if tool == name {
+			return true
+		}
+	}
+	return false
 }
 
 func privateDirectory(path, label string) (string, error) {

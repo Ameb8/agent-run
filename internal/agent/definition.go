@@ -30,8 +30,11 @@ type Definition struct {
 type definitionPresence struct{ networkMode, maxTurns, timeoutS bool }
 
 var (
-	identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	simpleID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	identifier   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	simpleID     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	builtInTools = map[string]struct{}{
+		"read": {}, "grep": {}, "write": {}, "edit": {}, "shell": {},
+	}
 )
 
 // ParseAndValidate strictly decodes and statically validates the definition
@@ -172,6 +175,12 @@ func validateDefinition(d *contract.AgentDefinition, presence definitionPresence
 		return err
 	}
 	for _, tool := range d.Tools.Allow {
+		// An extension's registrations can only be discovered after it is
+		// loaded in the sandbox. Without an extension, every allowed name is
+		// statically knowable and must be one of AgentRun's stable built-ins.
+		if len(d.Tools.Extensions) == 0 && !isBuiltInTool(tool) {
+			return validation("tools.allow %q is not a v1 built-in tool", tool)
+		}
 		if d.Permission == contract.PermissionReadOnly && (tool == "write" || tool == "edit") {
 			return validation("tools.allow %q is not allowed with read-only permission", tool)
 		}
@@ -186,6 +195,18 @@ func validateDefinition(d *contract.AgentDefinition, presence definitionPresence
 		return validation("limits must be positive integers")
 	}
 	return nil
+}
+
+// IsBuiltInTool reports membership in the closed v1 built-in tool set. It is
+// exported for the runtime adapter, which must reject an attempted activation
+// before passing an unknown name to Pi.
+func IsBuiltInTool(name string) bool {
+	return isBuiltInTool(name)
+}
+
+func isBuiltInTool(name string) bool {
+	_, ok := builtInTools[name]
+	return ok
 }
 
 func definitionFieldPresence(path string) (definitionPresence, error) {
