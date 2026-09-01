@@ -3,8 +3,8 @@ version: '3'
 # Go selects the repository-pinned toolchain from go.mod. Keep its build cache
 # in the repository so Task works in restricted CI and developer environments.
 env:
-  GOCACHE: '{{.ROOT_DIR}}/.cache/go-build'
-  GOLANGCI_LINT_CACHE: '{{.ROOT_DIR}}/.golangci.cache'
+  GOCACHE: '{{.TASKFILE_DIR}}/.cache/go-build'
+  GOLANGCI_LINT_CACHE: '{{.TASKFILE_DIR}}/.golangci.cache'
 
 tasks:
   default:
@@ -24,16 +24,11 @@ tasks:
         go build $packages
 
   run:
-    desc: Run the CLI (requires AGENT and WORKSPACE after cmd/agentrun exists)
+    desc: Run the CLI (requires AGENT and WORKSPACE)
     vars:
       INPUT_KEY: '{{default "request" .INPUT_KEY}}'
     cmds:
       - |-
-        if [ ! -d cmd/agentrun ]; then
-          echo "agentrun runtime is not implemented yet: task run requires the future ./cmd/agentrun entrypoint." >&2
-          echo "When it exists, use: task run AGENT=<agent-name-or-path> WORKSPACE=<path> [INPUT_KEY=<key> INPUT_FILE=<path>]" >&2
-          exit 1
-        fi
         if [ -z "${AGENT:-}" ] || [ -z "${WORKSPACE:-}" ]; then
           echo "task run requires AGENT=<agent-name-or-path> and WORKSPACE=<path>." >&2
           exit 1

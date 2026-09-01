@@ -8,8 +8,9 @@ against one workspace. Its behavioral contract is in
 
 The supported development toolchain is **Go 1.24.4**. `go.mod` records that
 toolchain, so a Go installation with toolchain auto-download enabled selects it
-without a separately managed Go install. No runtime implementation exists yet;
-the commands below establish the repository baseline for future Go packages.
+without a separately managed Go install. The bootstrap includes the
+`agentrun` executable, command registration, and shared v1 contract types.
+Command behavior beyond dispatch is added by later tasks.
 
 Install [Task](https://taskfile.dev/) and use these commands from the
 repository root:
@@ -35,19 +36,18 @@ lint binary. Its checked-in configuration enables `gofmt`,
 `gofumpt`, `errcheck`, and `staticcheck`, in addition to the v2 standard lint
 set. Do not replace these commands with an unpinned global installation.
 
-There is no CLI runtime package yet. Until a later task adds
-`./cmd/agentrun`, `task run` intentionally fails with an explicit prerequisite
-instead of simulating a run. Afterwards it accepts the required
-`AGENT=<agent-name-or-path>` and `WORKSPACE=<path>` variables, plus optional
+`task run` accepts the required `AGENT=<agent-name-or-path>` and
+`WORKSPACE=<path>` variables, plus optional
 `INPUT_KEY=<key>` (default `request`) and `INPUT_FILE=<path>`, and executes the
 equivalent `agentrun run` invocation. Export provider credential environment
 variables before invoking Task; do not place secrets in command-line inputs.
 This mirrors the CLI's documented preference for input files for sensitive or
 large values.
 
-The current spec-only baseline has no Go packages. Build, test, format, and
-lint report that fact successfully; once packages exist, each command runs its
-corresponding check over all packages.
+All registered commands currently report their unimplemented state on stderr
+and write nothing to stdout. This explicitly reserves stdout for the one JSON
+run result required by the v1 contract; a later runtime task owns its
+serialization.
 
 The `.gitignore` intentionally ignores only ephemeral AgentRun paths below
 `.agentrun/` (`cache`, `runs`, and `tmp`): definitions, prompts, skills, and
