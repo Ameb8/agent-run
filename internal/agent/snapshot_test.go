@@ -121,3 +121,37 @@ func TestSnapshotRejectsAliasedSelectedTargetsAndDigestPinning(t *testing.T) {
 		t.Fatalf("pin error = %v", err)
 	}
 }
+
+func TestSnapshotValidatesSelectedOutputSchema(t *testing.T) {
+	for _, schema := range []string{
+		`{"$schema":"https://json-schema.org/draft/2019-09/schema"}`,
+		`{"$ref":"https://example.test/result.json"}`,
+		`{"type":"object",`,
+	} {
+		f := newDefinitionFixture(t)
+		f.write("prompts/main.tmpl", "prompt")
+		f.write("schemas/result.json", schema)
+		f.definition(strings.TrimSuffix(validDefinition(), "\n") + "\noutput:\n  schema: schemas/result.json\n")
+		if _, err := CreateSnapshot(f.resolution()); err == nil || !strings.Contains(err.Error(), "output.schema") {
+			t.Errorf("CreateSnapshot(%q) = %v, want output.schema validation failure", schema, err)
+		}
+	}
+}
+
+func TestSnapshotRetainsCompiledOutputValidator(t *testing.T) {
+	f := newDefinitionFixture(t)
+	f.write("prompts/main.tmpl", "prompt")
+	f.write("schemas/result.json", `{"type":"boolean"}`)
+	f.definition(strings.TrimSuffix(validDefinition(), "\n") + "\noutput:\n  schema: schemas/result.json\n")
+	snapshot, err := CreateSnapshot(f.resolution())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	if snapshot.OutputValidator == nil {
+		t.Fatal("OutputValidator is nil")
+	}
+	if _, err := snapshot.OutputValidator.Parse("true"); err != nil {
+		t.Fatalf("compiled validator rejected valid output: %v", err)
+	}
+}

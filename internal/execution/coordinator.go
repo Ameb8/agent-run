@@ -12,11 +12,12 @@ import (
 	"fmt"
 
 	"github.com/Ameb8/agent-run/internal/contract"
+	"github.com/Ameb8/agent-run/internal/output"
 )
 
-// MaxFinalOutputBytes bounds an unstructured final response retained by the
-// host.  It matches the rendered-prompt bound: neither side of one model turn
-// may make AgentRun retain an unbounded payload.
+// MaxFinalOutputBytes bounds a final response retained by the host. It matches
+// the rendered-prompt bound: neither side of one model turn may make AgentRun
+// retain an unbounded payload.
 const MaxFinalOutputBytes = 32 << 20
 
 // Request describes one request the runtime is about to send to its selected
@@ -51,12 +52,33 @@ type Driver interface {
 // Exactly one of Final and ErrorType is set.
 type Outcome struct {
 	Final     *string
+	Result    any
 	ErrorType contract.ErrorCategory
 	Error     string
 	TurnsUsed int
 }
 
 func (o Outcome) Success() bool { return o.Final != nil && o.ErrorType == "" }
+
+// Finalize translates the runtime's final text into the result-contract value.
+// A nil validator preserves the unconstrained response as a JSON string. A
+// validator failure occurs after runtime execution and maps to OUTPUT without
+// altering its factual turn count or any workspace effects.
+func Finalize(outcome Outcome, validator *output.Validator) Outcome {
+	if !outcome.Success() {
+		return outcome
+	}
+	if validator == nil {
+		outcome.Result = *outcome.Final
+		return outcome
+	}
+	result, err := validator.Parse(*outcome.Final)
+	if err != nil {
+		return failure(contract.ErrorOutput, err.Error(), outcome.TurnsUsed)
+	}
+	outcome.Result = result
+	return outcome
+}
 
 // Coordinate runs the model/tool loop. It checks the turn budget before every
 // request and deliberately checks context termination after each round as

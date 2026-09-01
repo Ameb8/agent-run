@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Ameb8/agent-run/internal/contract"
+	"github.com/Ameb8/agent-run/internal/output"
 )
 
 type scriptedDriver struct {
@@ -102,5 +103,36 @@ func TestCoordinateMapsUnknownFailureToExecution(t *testing.T) {
 	got := Coordinate(context.Background(), 1, &scriptedDriver{errors: []error{errors.New("private")}})
 	if got.ErrorType != contract.ErrorExecution || got.Error == "private" {
 		t.Fatalf("outcome=%#v", got)
+	}
+}
+
+func TestFinalizePreservesUnstructuredFinalOutput(t *testing.T) {
+	got := Finalize(Outcome{Final: final("not JSON"), TurnsUsed: 1}, nil)
+	if !got.Success() || got.Result != "not JSON" || got.TurnsUsed != 1 {
+		t.Fatalf("outcome = %#v", got)
+	}
+}
+
+func TestFinalizeMapsInvalidStructuredOutputToOutput(t *testing.T) {
+	validator, err := output.Compile([]byte(`{"type":"object","required":["ok"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, response := range []string{"not JSON", `{"missing":true}`, "```json\n{}\n```"} {
+		got := Finalize(Outcome{Final: final(response), TurnsUsed: 2}, validator)
+		if got.Success() || got.ErrorType != contract.ErrorOutput || got.TurnsUsed != 2 || got.Final != nil {
+			t.Errorf("Finalize(%q) = %#v", response, got)
+		}
+	}
+}
+
+func TestFinalizeReturnsParsedStructuredValue(t *testing.T) {
+	validator, err := output.Compile([]byte(`{"type":"array","items":{"type":"number"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Finalize(Outcome{Final: final(`[1,2]`), TurnsUsed: 1}, validator)
+	if !got.Success() || got.Result == nil {
+		t.Fatalf("outcome = %#v", got)
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Ameb8/agent-run/internal/output"
 )
 
 // Snapshot is a private, immutable copy of the resources selected by a
@@ -19,6 +21,9 @@ type Snapshot struct {
 	Resolution Resolution
 	Definition Definition
 	Digest     string
+	// OutputValidator is nil when output.schema is omitted. Otherwise it was
+	// compiled from the immutable snapshot before sandbox preparation.
+	OutputValidator *output.Validator
 }
 
 // Close removes the private snapshot when it is no longer needed.
@@ -97,7 +102,14 @@ func createSnapshot(resolution Resolution, parent string) (*Snapshot, error) {
 	if err != nil {
 		return fail(err)
 	}
-	return &Snapshot{Root: root, Resolution: snapshotResolution, Definition: snapshotDefinition, Digest: digest(files)}, nil
+	var outputValidator *output.Validator
+	if snapshotDefinition.OutputSchema != "" {
+		outputValidator, err = output.CompileFile(snapshotDefinition.OutputSchema)
+		if err != nil {
+			return fail(validation("output.schema: %v", err))
+		}
+	}
+	return &Snapshot{Root: root, Resolution: snapshotResolution, Definition: snapshotDefinition, Digest: digest(files), OutputValidator: outputValidator}, nil
 }
 
 func selectedFiles(resolution Resolution, definition Definition) ([]snapshotFile, error) {
