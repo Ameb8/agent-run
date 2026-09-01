@@ -145,6 +145,9 @@ func validateDefinition(d *contract.AgentDefinition, presence definitionPresence
 	if err := uniqueIdentifiers("environment.allow", d.Environment.Allow, identifier.MatchString); err != nil {
 		return err
 	}
+	if d.Model.Provider == contract.ProviderOpenAICompatible && contains(d.Environment.Allow, d.Model.APIKeyEnv) {
+		return validation("environment.allow must not include model.api_key_env")
+	}
 	if err := uniqueIdentifiers("prompt.inputs.required", d.Prompt.Inputs.Required, identifier.MatchString); err != nil {
 		return err
 	}

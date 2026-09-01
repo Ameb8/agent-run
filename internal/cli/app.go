@@ -34,6 +34,8 @@ type App struct {
 	subscriptionStore auth.Store
 	subscriptionLogin subscriptionLogin
 	authSetupError    error
+	lookupEnv         func(string) (string, bool)
+	prepareProvider   func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error)
 }
 
 type runtimeVerifier interface {
@@ -50,7 +52,7 @@ func New(stderr io.Writer) *App {
 
 // NewWithWriters is useful to embedding callers and command tests.
 func NewWithWriters(stdout, stderr io.Writer) *App {
-	app := &App{stderr: stderr, stdout: stdout}
+	app := &App{stderr: stderr, stdout: stdout, lookupEnv: os.LookupEnv, prepareProvider: provider.Prepare}
 	app.subscriptionStore, app.authSetupError = auth.NewStore()
 	verifier, err := agentruntime.NewVerifier(agentruntime.NewDockerInspector(), agentruntime.BuildVersion)
 	if err == nil {
@@ -183,6 +185,14 @@ func (a *App) run(args []string) error {
 	if _, err := a.runtimeVerifier.Verify(context.Background()); err != nil {
 		return err
 	}
+	// Read extension credentials only after all static validation and runtime
+	// checks, immediately before provider/sandbox setup. The returned value is
+	// run-local and will be supplied to the Docker sandbox by the execution
+	// adapter; it is deliberately distinct from the provider credential below.
+	environment, err := agentruntime.ReadEnvironment(snapshot.Definition.Agent.Environment.Allow, a.lookupEnv)
+	if err != nil {
+		return err
+	}
 	var subscription auth.Handle
 	if snapshot.Definition.Agent.Model.Provider == contract.ProviderOpenAISubscription {
 		var credentialErr error
@@ -194,8 +204,8 @@ func (a *App) run(args []string) error {
 			return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication storage is unavailable"}
 		}
 	}
-	if _, err := provider.Prepare(snapshot.Definition.Agent.Model, os.LookupEnv, subscription); err != nil {
-		return err
+	if _, err := a.prepareProvider(snapshot.Definition.Agent.Model, a.lookupEnv, subscription); err != nil {
+		return environment.Redactor().RedactError(err)
 	}
 	return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "command is not implemented"}
 }

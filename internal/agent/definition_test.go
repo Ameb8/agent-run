@@ -84,6 +84,7 @@ func TestParseAndValidateRejectsInvalidDefinitions(t *testing.T) {
 		{"empty network mode", "network:\n  mode: ''\n", "network.mode"},
 		{"invalid host", "network:\n  mode: allowlist\n  hosts: [127.0.0.1]\n", "network.hosts"},
 		{"invalid environment", "environment:\n  allow: [BAD-NAME]\n", "environment.allow"},
+		{"model credential cannot enter sandbox", "model:\n  provider: openai-compatible\n  endpoint: https://models.example/v1\n  model: x\n  api_key_env: MODEL_KEY\nenvironment:\n  allow: [MODEL_KEY]\n", "environment.allow must not include model.api_key_env"},
 		{"duplicate skills", "skills: [review, review]\n", "duplicate"},
 		{"duplicate extension", "tools:\n  extensions: [search, search]\n", "duplicate"},
 		{"duplicate input", "prompt:\n  template: prompts/main.tmpl\n  inputs:\n    required: [issue, issue]\n", "duplicate"},

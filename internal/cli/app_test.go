@@ -11,6 +11,7 @@ import (
 
 	"github.com/Ameb8/agent-run/internal/auth"
 	"github.com/Ameb8/agent-run/internal/contract"
+	"github.com/Ameb8/agent-run/internal/provider"
 )
 
 func TestAllV1CommandsAreRegistered(t *testing.T) {
@@ -206,6 +207,48 @@ func TestSubscriptionRunReportsMissingCredentialAsAuthentication(t *testing.T) {
 	}
 	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "AUTHENTICATION") {
 		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunRejectsMissingDeclaredEnvironmentBeforeProviderAccess(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	definition := filepath.Join(root, "package", "agents", "reviewer.yaml")
+	if err := os.MkdirAll(filepath.Join(root, "package", "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(definition), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package", "prompts", "main.tmpl"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contents := "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-compatible\n  endpoint: https://models.example/v1\n  model: test\n  api_key_env: MODEL_KEY\nenvironment:\n  allow: [EXTENSION_KEY]\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n"
+	if err := os.WriteFile(definition, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.runtimeVerifier = successfulRuntimeVerifier{}
+	app.lookupEnv = func(name string) (string, bool) {
+		if name == "MODEL_KEY" {
+			return "model-secret", true
+		}
+		return "", false
+	}
+	providerCalled := false
+	app.prepareProvider = func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error) {
+		providerCalled = true
+		return nil, nil
+	}
+	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
+		t.Fatalf("run exit = %d", code)
+	}
+	if providerCalled || stdout.Len() != 0 || !strings.Contains(stderr.String(), "CONFIGURATION") || !strings.Contains(stderr.String(), "EXTENSION_KEY") {
+		t.Fatalf("providerCalled=%v stdout=%q stderr=%q", providerCalled, stdout.String(), stderr.String())
 	}
 }
 

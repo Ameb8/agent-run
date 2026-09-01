@@ -224,6 +224,36 @@ func TestDockerSandboxDerivesWorkspaceMountModeOnlyFromPermission(t *testing.T) 
 	}
 }
 
+func TestDockerSandboxInjectsOnlyRunEnvironment(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	resources := filepath.Join(root, "resources")
+	configuration := filepath.Join(root, "config")
+	temporary := filepath.Join(root, "tmp")
+	for _, path := range []string{workspace, resources, configuration, temporary} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	environment, err := ReadEnvironment([]string{"DECLARED"}, func(string) (string, bool) { return "run-secret-canary", true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest()}, goos: "linux"}
+	args, err := sandbox.createArgs(workspace, resources, configuration, temporary, SandboxRequest{Permission: contract.PermissionReadOnly, Environment: environment, Command: []string{"pi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "--env\x00DECLARED=run-secret-canary") {
+		t.Fatalf("Docker arguments do not inject declared environment: %q", args)
+	}
+	if strings.Contains(joined, "HOST_SECRET") || strings.Contains(joined, "MODEL_KEY") {
+		t.Fatalf("Docker arguments inherited an undeclared host variable: %q", args)
+	}
+}
+
 type sandboxCall struct{ args []string }
 
 type sandboxRunner struct {

@@ -75,6 +75,7 @@ type SandboxRequest struct {
 	Temporary        string
 	Permission       contract.Permission
 	WorkspacePackage bool
+	Environment      Environment
 	Command          []string
 }
 
@@ -303,6 +304,9 @@ func (s DockerSandbox) createArgs(workspace, resources, configuration, temporary
 	}
 	if request.WorkspacePackage {
 		args = append(args, "--mount", "type=tmpfs,dst=/workspace/.agentrun,tmpfs-mode=0755")
+	}
+	for _, entry := range request.Environment.Entries() {
+		args = append(args, "--env", entry)
 	}
 	args = append(args, s.Verifier.Manifest.Image)
 	args = append(args, request.Command...)
