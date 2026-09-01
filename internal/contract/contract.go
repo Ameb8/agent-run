@@ -4,7 +4,10 @@
 // resolving packages, and serializing run results belong to later layers.
 package contract
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 const (
 	DefinitionSchemaVersion = 1
@@ -151,14 +154,42 @@ type RunResult struct {
 	SchemaVersion int              `json:"schema_version"`
 	RunID         string           `json:"run_id"`
 	Status        RunStatus        `json:"status"`
-	Result        any              `json:"result,omitempty"`
-	ErrorType     ErrorCategory    `json:"error_type,omitempty"`
-	Error         string           `json:"error,omitempty"`
+	Result        any              `json:"-"`
+	ErrorType     ErrorCategory    `json:"-"`
+	Error         string           `json:"-"`
 	Agent         *PackageIdentity `json:"agent,omitempty"`
 	Runtime       RuntimeIdentity  `json:"runtime"`
 	Model         *ModelIdentity   `json:"model,omitempty"`
 	TurnsUsed     int              `json:"turns_used"`
 	DurationS     float64          `json:"duration_s"`
+}
+
+// MarshalJSON enforces the mutually exclusive terminal shapes. In particular,
+// a successful structured result of JSON null must still retain its result
+// member, while failure objects must not grow a misleading result:null member.
+func (r RunResult) MarshalJSON() ([]byte, error) {
+	type common struct {
+		SchemaVersion int              `json:"schema_version"`
+		RunID         string           `json:"run_id"`
+		Status        RunStatus        `json:"status"`
+		Agent         *PackageIdentity `json:"agent,omitempty"`
+		Runtime       RuntimeIdentity  `json:"runtime"`
+		Model         *ModelIdentity   `json:"model,omitempty"`
+		TurnsUsed     int              `json:"turns_used"`
+		DurationS     float64          `json:"duration_s"`
+	}
+	base := common{r.SchemaVersion, r.RunID, r.Status, r.Agent, r.Runtime, r.Model, r.TurnsUsed, r.DurationS}
+	if r.Status == RunStatusSuccess {
+		return json.Marshal(struct {
+			common
+			Result any `json:"result"`
+		}{base, r.Result})
+	}
+	return json.Marshal(struct {
+		common
+		ErrorType ErrorCategory `json:"error_type"`
+		Error     string        `json:"error"`
+	}{base, r.ErrorType, r.Error})
 }
 
 // ErrorCategory is a stable machine-readable run-failure category. Callers

@@ -1,9 +1,10 @@
-// Package cli owns command dispatch and human diagnostics.
-// Machine-readable run results are intentionally not emitted here yet.
+// Package cli owns command dispatch, human diagnostics, and the terminal run
+// result boundary.
 package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/Ameb8/agent-run/internal/agent"
 	"github.com/Ameb8/agent-run/internal/auth"
@@ -36,7 +39,17 @@ type App struct {
 	authSetupError    error
 	lookupEnv         func(string) (string, bool)
 	prepareProvider   func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error)
+	runtimeIdentity   contract.RuntimeIdentity
+	activeRun         *runFacts
 }
+
+type runFacts struct {
+	agent   *contract.PackageIdentity
+	model   *contract.ModelIdentity
+	runtime contract.RuntimeIdentity
+}
+
+var fallbackRunSequence uint64
 
 type runtimeVerifier interface {
 	Verify(context.Context) (contract.RuntimeIdentity, error)
@@ -53,6 +66,9 @@ func New(stderr io.Writer) *App {
 // NewWithWriters is useful to embedding callers and command tests.
 func NewWithWriters(stdout, stderr io.Writer) *App {
 	app := &App{stderr: stderr, stdout: stdout, lookupEnv: os.LookupEnv, prepareProvider: provider.Prepare}
+	if manifest, err := agentruntime.LoadManifest(); err == nil {
+		app.runtimeIdentity = manifest.Identity(agentruntime.BuildVersion)
+	}
 	app.subscriptionStore, app.authSetupError = auth.NewStore()
 	verifier, err := agentruntime.NewVerifier(agentruntime.NewDockerInspector(), agentruntime.BuildVersion)
 	if err == nil {
@@ -73,11 +89,104 @@ func (a *App) Run(args []string) int {
 		a.diagnostic("unknown command")
 		return 1
 	}
+	if equalPath(command.Path, []string{"run"}) {
+		return a.runAndEmit(commandArgs)
+	}
 	if err := command.Execute(commandArgs); err != nil {
 		a.diagnostic(err.Error())
 		return 1
 	}
 	return 0
+}
+
+// runAndEmit is the sole stdout boundary for a run invocation. It starts its
+// clock before resolution and serializes only after run has returned, so all
+// deferred sandbox and snapshot cleanup is included in duration_s.
+func (a *App) runAndEmit(args []string) int {
+	started := time.Now()
+	runID := newRunID()
+	facts := &runFacts{runtime: a.runtimeIdentity}
+	a.activeRun = facts
+	err := a.run(args)
+	a.activeRun = nil
+
+	result := contract.RunResult{
+		SchemaVersion: contract.ResultSchemaVersion,
+		RunID:         runID,
+		Runtime:       facts.runtime,
+		Agent:         facts.agent,
+		Model:         facts.model,
+		DurationS:     time.Since(started).Seconds(),
+	}
+	if err == nil {
+		result.Status = contract.RunStatusSuccess
+		result.Result = ""
+	} else {
+		result.Status = contract.RunStatusFailure
+		result.ErrorType, result.Error = runError(err)
+	}
+	if encodeErr := json.NewEncoder(a.stdout).Encode(result); encodeErr != nil {
+		// stdout is the contract transport; an unwritable stream is necessarily
+		// an invocation failure and cannot safely be represented on that stream.
+		a.diagnostic("write run result")
+		return 1
+	}
+	if result.Status == contract.RunStatusSuccess {
+		return 0
+	}
+	return 1
+}
+
+func newRunID() string {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		// crypto/rand failing is exceptionally rare; retain a non-empty,
+		// invocation-local correlation value without exposing error details.
+		return fmt.Sprintf("run-%d-%d", time.Now().UnixNano(), atomic.AddUint64(&fallbackRunSequence, 1))
+	}
+	return fmt.Sprintf("run-%x", bytes)
+}
+
+func runError(err error) (contract.ErrorCategory, string) {
+	var command *contract.CommandError
+	if errors.As(err, &command) && command.Category != "" {
+		return command.Category, safeRunErrorMessage(command.Category)
+	}
+	// Do not expose unexpected wrapped values: they can include provider bodies,
+	// credentials, prompt material, or environment values.
+	return contract.ErrorInternal, "unexpected AgentRun failure"
+}
+
+// Command errors often originate at a trust boundary (definition parsing,
+// templates, provider transport, or child processes). Their detailed text can
+// contain prompt inputs, model output, credentials, environment values, or a
+// raw provider body. The stable category is the public diagnostic; keep the
+// default detail deliberately bounded and independent of those sources.
+func safeRunErrorMessage(category contract.ErrorCategory) string {
+	switch category {
+	case contract.ErrorValidation:
+		return "run validation failed"
+	case contract.ErrorConfiguration:
+		return "run configuration failed"
+	case contract.ErrorAuthentication:
+		return "provider authentication failed"
+	case contract.ErrorProvider:
+		return "model provider request failed"
+	case contract.ErrorTool:
+		return "allowed tool failed"
+	case contract.ErrorOutput:
+		return "final output did not satisfy the declared contract"
+	case contract.ErrorTimeout:
+		return "run timeout reached"
+	case contract.ErrorLimit:
+		return "run limit reached"
+	case contract.ErrorCancelled:
+		return "run cancelled"
+	case contract.ErrorExecution:
+		return "agent runtime execution failed"
+	default:
+		return "unexpected AgentRun failure"
+	}
 }
 
 func (a *App) find(args []string) (Command, []string, bool) {
@@ -174,6 +283,10 @@ func (a *App) run(args []string) error {
 		return err
 	}
 	defer snapshot.Close()
+	if a.activeRun != nil {
+		a.activeRun.agent = &contract.PackageIdentity{Name: snapshot.Definition.Agent.Name, Digest: snapshot.Digest}
+		a.activeRun.model = &contract.ModelIdentity{Provider: snapshot.Definition.Agent.Model.Provider, Requested: snapshot.Definition.Agent.Model.Model}
+	}
 	if err := agent.VerifyExpectedDigest(snapshot, expected); err != nil {
 		return err
 	}
@@ -182,8 +295,12 @@ func (a *App) run(args []string) error {
 	if a.runtimeVerifier == nil {
 		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime manifest is unavailable"}
 	}
-	if _, err := a.runtimeVerifier.Verify(context.Background()); err != nil {
+	runtimeIdentity, err := a.runtimeVerifier.Verify(context.Background())
+	if err != nil {
 		return err
+	}
+	if a.activeRun != nil {
+		a.activeRun.runtime = runtimeIdentity
 	}
 	// Construct Pi's private resource view before provider or sandbox work. The
 	// execution adapter consumes this run-local configuration when it creates

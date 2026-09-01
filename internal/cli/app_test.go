@@ -48,6 +48,29 @@ func TestDiagnosticsDoNotUseStdout(t *testing.T) {
 	}
 }
 
+func TestRunAlwaysEmitsOneRedactedFailureObject(t *testing.T) {
+	t.Parallel()
+
+	const canary = "prompt-and-credential-canary"
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	if code := app.Run([]string{"run", canary}); code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	got := decodeRunResult(t, stdout.Bytes())
+	if got["error_type"] != string(contract.ErrorValidation) || strings.Contains(stdout.String(), canary) || strings.Contains(stderr.String(), canary) {
+		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	}
+	decoder := json.NewDecoder(strings.NewReader(stdout.String()))
+	var one, extra any
+	if err := decoder.Decode(&one); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoder.Decode(&extra); err == nil {
+		t.Fatalf("stdout contains more than one JSON object: %q", stdout.String())
+	}
+}
+
 func TestValidateAndInspectUseStaticSnapshot(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
@@ -90,8 +113,9 @@ func TestValidateAndInspectUseStaticSnapshot(t *testing.T) {
 	if code := app.Run(append([]string{"run"}, append(args, "--expect-agent-digest", "sha256:not-the-package")...)); code != 1 {
 		t.Fatalf("run exit = %d", code)
 	}
-	if !strings.Contains(stderr.String(), "VALIDATION") || !strings.Contains(stderr.String(), "expect-agent-digest") {
-		t.Fatalf("digest mismatch diagnostic = %q", stderr.String())
+	gotRun := decodeRunResult(t, stdout.Bytes())
+	if gotRun["error_type"] != string(contract.ErrorValidation) || gotRun["agent"] == nil || gotRun["model"] == nil {
+		t.Fatalf("digest mismatch result = %#v", gotRun)
 	}
 }
 
@@ -123,7 +147,8 @@ func TestRunReportsConfigurationWhenPrivateRuntimeIsUnavailable(t *testing.T) {
 	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
 		t.Fatalf("run exit = %d, want 1", code)
 	}
-	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "CONFIGURATION") {
+	got := decodeRunResult(t, stdout.Bytes())
+	if got["error_type"] != string(contract.ErrorConfiguration) || stderr.Len() != 0 {
 		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
 	}
 }
@@ -205,7 +230,8 @@ func TestSubscriptionRunReportsMissingCredentialAsAuthentication(t *testing.T) {
 	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
 		t.Fatalf("run exit = %d", code)
 	}
-	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "AUTHENTICATION") {
+	got := decodeRunResult(t, stdout.Bytes())
+	if got["error_type"] != string(contract.ErrorAuthentication) || stderr.Len() != 0 {
 		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
 	}
 }
@@ -247,9 +273,22 @@ func TestRunRejectsMissingDeclaredEnvironmentBeforeProviderAccess(t *testing.T) 
 	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
 		t.Fatalf("run exit = %d", code)
 	}
-	if providerCalled || stdout.Len() != 0 || !strings.Contains(stderr.String(), "CONFIGURATION") || !strings.Contains(stderr.String(), "EXTENSION_KEY") {
+	got := decodeRunResult(t, stdout.Bytes())
+	if providerCalled || got["error_type"] != string(contract.ErrorConfiguration) || stderr.Len() != 0 {
 		t.Fatalf("providerCalled=%v stdout=%q stderr=%q", providerCalled, stdout.String(), stderr.String())
 	}
+}
+
+func decodeRunResult(t *testing.T, contents []byte) map[string]any {
+	t.Helper()
+	var got map[string]any
+	if err := json.Unmarshal(contents, &got); err != nil {
+		t.Fatalf("invalid run JSON %q: %v", contents, err)
+	}
+	if got["schema_version"] != float64(contract.ResultSchemaVersion) || got["run_id"] == "" || got["status"] != string(contract.RunStatusFailure) {
+		t.Fatalf("run result = %#v", got)
+	}
+	return got
 }
 
 type successfulRuntimeVerifier struct{}

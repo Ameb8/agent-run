@@ -1,0 +1,16 @@
+[
+  {"name":"unstructured success","status":"SUCCESS","result":"final text"},
+  {"name":"structured null success","status":"SUCCESS","result":null},
+  {"name":"early validation failure","status":"FAILURE","error_type":"VALIDATION","error":"safe","omit_identity":true},
+  {"name":"late configuration failure","status":"FAILURE","error_type":"CONFIGURATION","error":"safe"},
+  {"name":"authentication failure","status":"FAILURE","error_type":"AUTHENTICATION","error":"safe"},
+  {"name":"provider failure","status":"FAILURE","error_type":"PROVIDER","error":"safe"},
+  {"name":"tool failure","status":"FAILURE","error_type":"TOOL","error":"safe"},
+  {"name":"output failure","status":"FAILURE","error_type":"OUTPUT","error":"safe"},
+  {"name":"timeout failure","status":"FAILURE","error_type":"TIMEOUT","error":"safe"},
+  {"name":"limit failure","status":"FAILURE","error_type":"LIMIT","error":"safe"},
+  {"name":"cancelled failure","status":"FAILURE","error_type":"CANCELLED","error":"safe"},
+  {"name":"execution failure","status":"FAILURE","error_type":"EXECUTION","error":"safe"},
+  {"name":"internal failure","status":"FAILURE","error_type":"INTERNAL","error":"safe"},
+  {"name":"future category tolerance","status":"FAILURE","error_type":"FUTURE_CATEGORY","error":"safe"}
+]
