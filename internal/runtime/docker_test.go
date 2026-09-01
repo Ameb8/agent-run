@@ -3,8 +3,14 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/Ameb8/agent-run/internal/contract"
 )
 
 func TestDockerInspectorUsesOnlyLocalImageInspect(t *testing.T) {
@@ -22,6 +28,182 @@ func TestDockerInspectorUsesOnlyLocalImageInspect(t *testing.T) {
 	want := []string{"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	if !reflect.DeepEqual(digests, want) {
 		t.Fatalf("digests = %q, want %q", digests, want)
+	}
+}
+
+func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	resources := filepath.Join(root, "resources")
+	for _, path := range []string{workspace, resources} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &sandboxRunner{}
+	sandbox := DockerSandbox{
+		Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}},
+		command:  runner,
+		goos:     "linux",
+	}
+	container, err := sandbox.Create(context.Background(), SandboxRequest{
+		Workspace: workspace, Resources: resources, Permission: contract.PermissionReadOnly,
+		WorkspacePackage: true, Command: []string{"pi", "--help"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if container.ID != "container-id" {
+		t.Fatalf("container = %#v", container)
+	}
+	create := runner.calls[3]
+	got := strings.Join(create.args, " ")
+	for _, required := range []string{
+		"create --pull=never --network none --read-only", "--cap-drop ALL", "--security-opt no-new-privileges:true",
+		"--pids-limit 256", "bind-propagation=rprivate,bind-recursive=disabled,readonly",
+		"dst=/agentrun/resources,readonly,bind-propagation=rprivate,bind-recursive=disabled",
+		"type=tmpfs,dst=/workspace/.agentrun,tmpfs-mode=0755", "--tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m",
+	} {
+		if !strings.Contains(got, required) {
+			t.Errorf("docker create arguments missing %q:\n%s", required, got)
+		}
+	}
+	if strings.Contains(got, "--volume") || strings.Contains(got, "--net host") {
+		t.Fatalf("unsafe docker arguments: %s", got)
+	}
+	if err := container.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.calls[4].args; !reflect.DeepEqual(got, []string{"rm", "--force", "container-id"}) {
+		t.Fatalf("remove arguments = %q", got)
+	}
+}
+
+func TestDockerSandboxFailsClosed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	resources := filepath.Join(root, "resources")
+	for _, path := range []string{workspace, resources} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name   string
+		goos   string
+		runner *sandboxRunner
+	}{
+		{name: "unsupported host", goos: "darwin", runner: &sandboxRunner{}},
+		{name: "old Docker API", goos: "linux", runner: &sandboxRunner{apiVersion: "1.44"}},
+		{name: "rootless engine", goos: "linux", runner: &sandboxRunner{security: `["name=rootless"]`}},
+		{name: "engine rejects nonrecursive bind", goos: "linux", runner: &sandboxRunner{createErr: errors.New("unknown bind-recursive")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: test.runner, goos: test.goos}
+			_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
+			var commandError *contract.CommandError
+			if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
+				t.Fatalf("Create() error = %v, want CONFIGURATION", err)
+			}
+		})
+	}
+}
+
+func TestDockerSandboxRejectsMountOptionInjectionPaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace,readonly=false")
+	resources := filepath.Join(root, "resources")
+	for _, path := range []string{workspace, resources} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &sandboxRunner{}
+	sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: runner, goos: "linux"}
+	_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
+	var commandError *contract.CommandError
+	if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
+		t.Fatalf("Create() error = %v, want CONFIGURATION", err)
+	}
+	for _, call := range runner.calls {
+		if len(call.args) > 0 && call.args[0] == "create" {
+			t.Fatal("Docker create was called for an unsafe mount path")
+		}
+	}
+}
+
+func TestDockerSandboxDerivesWorkspaceMountModeOnlyFromPermission(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	resources := filepath.Join(root, "resources")
+	for _, path := range []string{workspace, resources} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest()}, goos: "linux"}
+	for _, permission := range []contract.Permission{contract.PermissionReadOnly, contract.PermissionReadWrite} {
+		args, err := sandbox.createArgs(workspace, resources, SandboxRequest{Permission: permission, Command: []string{"pi"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var workspaceOption string
+		for i := range args {
+			if strings.Contains(args[i], "dst=/workspace,") {
+				workspaceOption = args[i]
+			}
+		}
+		readonly := strings.Contains(workspaceOption, ",readonly")
+		if readonly != (permission == contract.PermissionReadOnly) {
+			t.Fatalf("permission %q workspace mount %q", permission, workspaceOption)
+		}
+	}
+}
+
+type sandboxCall struct{ args []string }
+
+type sandboxRunner struct {
+	calls      []sandboxCall
+	security   string
+	apiVersion string
+	createErr  error
+}
+
+func (r *sandboxRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
+	if name != "docker" {
+		return nil, fmt.Errorf("unexpected command %q", name)
+	}
+	r.calls = append(r.calls, sandboxCall{args: args})
+	if len(args) == 0 {
+		return nil, errors.New("missing docker subcommand")
+	}
+	switch args[0] {
+	case "version":
+		if strings.Contains(strings.Join(args, " "), "APIVersion") {
+			if r.apiVersion != "" {
+				return []byte(r.apiVersion + "\n"), nil
+			}
+			return []byte("1.45\n"), nil
+		}
+		return []byte("linux\n"), nil
+	case "info":
+		if r.security != "" {
+			return []byte(r.security), nil
+		}
+		return []byte(`["name=seccomp"]`), nil
+	case "create":
+		if r.createErr != nil {
+			return nil, r.createErr
+		}
+		return []byte("container-id\n"), nil
+	case "rm":
+		return []byte("container-id\n"), nil
+	default:
+		return nil, fmt.Errorf("unexpected docker arguments %q", args)
 	}
 }
 
