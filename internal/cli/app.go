@@ -185,6 +185,13 @@ func (a *App) run(args []string) error {
 	if _, err := a.runtimeVerifier.Verify(context.Background()); err != nil {
 		return err
 	}
+	// Construct Pi's private resource view before provider or sandbox work. The
+	// execution adapter consumes this run-local configuration when it creates
+	// the pinned-runtime container; no mutable package or user Pi state is ever
+	// consulted to discover skills.
+	if _, err := agentruntime.GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot); err != nil {
+		return err
+	}
 	// Read extension credentials only after all static validation and runtime
 	// checks, immediately before provider/sandbox setup. The returned value is
 	// run-local and will be supplied to the Docker sandbox by the execution
