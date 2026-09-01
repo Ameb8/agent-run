@@ -150,6 +150,75 @@ func TestGeneratePiConfigurationRejectsSnapshotOutsideMountedResources(t *testin
 	}
 }
 
+func TestPiConfigurationLoadsDeclaredExtensionsAndActivatesOnlyAllowlist(t *testing.T) {
+	scope, snapshot := piConfigurationExtensionFixture(t)
+	defer scope.Close()
+	defer snapshot.Close()
+
+	configuration, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceRoot := "/agentrun/resources/" + filepath.Base(snapshot.Root)
+	if got, want := configuration.Extensions, []string{resourceRoot + "/extensions/search/index.ts"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("extensions = %q, want %q", got, want)
+	}
+	if got, want := configuration.ActiveTools, []string{"read", "search_web"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("active tools = %q, want %q", got, want)
+	}
+	command := strings.Join(configuration.Command(), "\x00")
+	if configuration.ExtensionLoader != "/agentrun/config/pi/agentrun-extensions.ts" {
+		t.Fatalf("extension loader = %q", configuration.ExtensionLoader)
+	}
+	loader, err := os.ReadFile(filepath.Join(scope.Configuration, "pi", piExtensionLoaderFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{resourceRoot + "/extensions/search/index.ts", "duplicate extension tool", "cannot override built-in", "was not registered"} {
+		if !strings.Contains(string(loader), required) {
+			t.Errorf("loader missing %q: %s", required, loader)
+		}
+	}
+	if !strings.Contains(command, "--no-extensions") || !strings.Contains(command, "--extension\x00/agentrun/config/pi/agentrun-extensions.ts") || strings.Contains(command, "--extension\x00"+resourceRoot+"/extensions/search/index.ts") || !strings.Contains(command, "--tools\x00read,search_web") {
+		t.Fatalf("extension command = %q", configuration.Command())
+	}
+}
+
+func piConfigurationExtensionFixture(t *testing.T) (*RunScope, *agent.Snapshot) {
+	t.Helper()
+	scope, err := NewRunScope()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "source")
+	for _, directory := range []string{"agents", "prompts", "extensions/search"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "prompts", "main.tmpl"), []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "extensions", "search", "index.ts"), []byte(`import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+export default function (pi: ExtensionAPI) { pi.registerTool({ name: "search_web" }); }`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition := "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-subscription\n  model: test\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\ntools:\n  extensions: [search]\n  allow: [read, search_web]\n"
+	definitionPath := filepath.Join(root, "agents", "reviewer.yaml")
+	if err := os.WriteFile(definitionPath, []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := agent.Resolve(agent.ResolveOptions{Workspace: root, Selection: definitionPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := agent.CreateSnapshotIn(resolution, scope.Resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope, snapshot
+}
+
 func piConfigurationFixture(t *testing.T, skills []string, schema bool, tools ...string) (*RunScope, *agent.Snapshot) {
 	t.Helper()
 	scope, err := NewRunScope()
