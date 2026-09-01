@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Ameb8/agent-run/internal/agent"
 	"github.com/Ameb8/agent-run/internal/contract"
+	agentruntime "github.com/Ameb8/agent-run/internal/runtime"
 )
 
 type Command struct {
@@ -22,9 +24,14 @@ type Command struct {
 }
 
 type App struct {
-	commands []Command
-	stderr   io.Writer
-	stdout   io.Writer
+	commands        []Command
+	stderr          io.Writer
+	stdout          io.Writer
+	runtimeVerifier runtimeVerifier
+}
+
+type runtimeVerifier interface {
+	Verify(context.Context) (contract.RuntimeIdentity, error)
 }
 
 func New(stderr io.Writer) *App {
@@ -34,6 +41,10 @@ func New(stderr io.Writer) *App {
 // NewWithWriters is useful to embedding callers and command tests.
 func NewWithWriters(stdout, stderr io.Writer) *App {
 	app := &App{stderr: stderr, stdout: stdout}
+	verifier, err := agentruntime.NewVerifier(agentruntime.NewDockerInspector(), agentruntime.BuildVersion)
+	if err == nil {
+		app.runtimeVerifier = verifier
+	}
 	app.commands = app.registeredCommands()
 	return app
 }
@@ -106,6 +117,14 @@ func (a *App) run(args []string) error {
 	}
 	defer snapshot.Close()
 	if err := agent.VerifyExpectedDigest(snapshot, expected); err != nil {
+		return err
+	}
+	// Runtime verification happens after static package validation but before any
+	// extension or model work. It never discovers a host pi or JavaScript binary.
+	if a.runtimeVerifier == nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime manifest is unavailable"}
+	}
+	if _, err := a.runtimeVerifier.Verify(context.Background()); err != nil {
 		return err
 	}
 	return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "command is not implemented"}

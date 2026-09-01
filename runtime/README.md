@@ -1,7 +1,10 @@
 # AgentRun private runtime image
 
 This directory produces the OCI image bundled with an AgentRun Linux release.
-Its build inputs are centralized in [`versions.env`](versions.env).
+The release-owned [`../internal/runtime/manifest.json`](../internal/runtime/manifest.json)
+is the authoritative identity for the image, Pi, JavaScript, and built-in tools;
+the Go host embeds that file. [`versions.env`](versions.env) holds only build-only
+inputs such as the base-image digest and Pi tarball integrity.
 The Docker build context is this directory only, so workspace and repository
 files are never sent to the image builder.
 

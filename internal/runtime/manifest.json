@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "image": "agentrun-runtime:private",
+  "image_digest": "sha256:68743e5dc0aed0db80ca1d5275d68919b45c1f2ad8bf85f7823f4d47fbaea659",
+  "pi": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.74.0"
+  },
+  "javascript_version": "v22.14.0",
+  "built_in_tools": [
+    {"name": "read", "description": "read a file or list a directory inside the workspace"},
+    {"name": "grep", "description": "search file contents inside the workspace"},
+    {"name": "write", "description": "create or replace a workspace file"},
+    {"name": "edit", "description": "apply a targeted change to a workspace file"},
+    {"name": "shell", "description": "execute a non-interactive command with the workspace as its working directory"}
+  ]
+}

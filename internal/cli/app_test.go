@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Ameb8/agent-run/internal/contract"
 )
 
 func TestAllV1CommandsAreRegistered(t *testing.T) {
@@ -66,6 +69,7 @@ func TestValidateAndInspectUseStaticSnapshot(t *testing.T) {
 	args := []string{definition, "--workspace", workspace}
 	var stdout, stderr bytes.Buffer
 	app := NewWithWriters(&stdout, &stderr)
+	app.runtimeVerifier = successfulRuntimeVerifier{}
 	if code := app.Run(append([]string{"validate"}, args...)); code != 0 {
 		t.Fatalf("validate exit = %d, stderr = %s", code, stderr.String())
 	}
@@ -87,4 +91,49 @@ func TestValidateAndInspectUseStaticSnapshot(t *testing.T) {
 	if !strings.Contains(stderr.String(), "VALIDATION") || !strings.Contains(stderr.String(), "expect-agent-digest") {
 		t.Fatalf("digest mismatch diagnostic = %q", stderr.String())
 	}
+}
+
+func TestRunReportsConfigurationWhenPrivateRuntimeIsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	definition := filepath.Join(root, "package", "agents", "reviewer.yaml")
+	if err := os.MkdirAll(filepath.Join(root, "package", "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package", "prompts", "main.tmpl"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contents := "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-subscription\n  model: test\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n"
+	if err := os.MkdirAll(filepath.Dir(definition), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(definition, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.runtimeVerifier = unavailableRuntimeVerifier{}
+	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
+		t.Fatalf("run exit = %d, want 1", code)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "CONFIGURATION") {
+		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	}
+}
+
+type successfulRuntimeVerifier struct{}
+
+func (successfulRuntimeVerifier) Verify(context.Context) (contract.RuntimeIdentity, error) {
+	return contract.RuntimeIdentity{}, nil
+}
+
+type unavailableRuntimeVerifier struct{}
+
+func (unavailableRuntimeVerifier) Verify(context.Context) (contract.RuntimeIdentity, error) {
+	return contract.RuntimeIdentity{}, &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime image is unavailable"}
 }
