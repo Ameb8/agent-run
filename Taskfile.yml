@@ -92,3 +92,13 @@ tasks:
       - task: lint
       - task: test
       - task: build
+
+  runtime:build:
+    desc: Build the pinned private runtime as an OCI release artifact
+    cmds:
+      - ./runtime/build.sh
+
+  runtime:verify:
+    desc: Build and smoke-test the private runtime (requires Docker Engine)
+    cmds:
+      - ./runtime/verify.sh

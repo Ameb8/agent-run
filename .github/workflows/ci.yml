@@ -32,3 +32,18 @@ jobs:
 
       - name: Run CI checks
         run: task ci
+
+  runtime:
+    name: Private runtime image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Task
+        uses: go-task/setup-task@v1
+        with:
+          version: 3.52.0
+
+      - name: Build and inspect private runtime
+        run: task runtime:verify
