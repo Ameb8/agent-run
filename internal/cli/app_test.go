@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Ameb8/agent-run/internal/auth"
 	"github.com/Ameb8/agent-run/internal/contract"
 )
 
@@ -24,8 +25,8 @@ func TestAllV1CommandsAreRegistered(t *testing.T) {
 	app := New(&stderr)
 	for _, args := range [][]string{
 		{"run"}, {"validate"}, {"inspect"},
-		{"auth", "login", "openai-subscription"},
-		{"auth", "logout", "openai-subscription"}, {"version"}, {"doctor"},
+		{"auth", "login", "openai-subscription", "unexpected"},
+		{"auth", "logout", "openai-subscription", "unexpected"}, {"version"}, {"doctor"},
 	} {
 		if exitCode := app.Run(args); exitCode != 1 {
 			t.Errorf("Run(%q) exit code = %d, want 1", args, exitCode)
@@ -126,6 +127,88 @@ func TestRunReportsConfigurationWhenPrivateRuntimeIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestSubscriptionLoginReplacementAndLogoutKeepCredentialOffOutput(t *testing.T) {
+	root := t.TempDir()
+	store, err := auth.NewStoreAt(filepath.Join(root, "agentrun"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const canary = "openai-subscription-secret-canary"
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.subscriptionStore = store
+	app.authSetupError = nil
+	app.subscriptionLogin = subscriptionLoginFunc(func(context.Context) ([]byte, error) {
+		return []byte(`{"openai-codex":{"type":"oauth","access":"` + canary + `"}}`), nil
+	})
+	if code := app.Run([]string{"auth", "login", "openai-subscription"}); code != 0 {
+		t.Fatalf("login exit = %d, stderr = %q", code, stderr.String())
+	}
+	if stdout.Len() != 0 || strings.Contains(stderr.String(), canary) {
+		t.Fatalf("login output exposed credential: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	app.subscriptionLogin = subscriptionLoginFunc(func(context.Context) ([]byte, error) {
+		return []byte(`{"openai-codex":{"type":"oauth","access":"replacement"}}`), nil
+	})
+	if code := app.Run([]string{"auth", "login", "openai-subscription"}); code != 0 {
+		t.Fatalf("replacement login exit = %d, stderr = %q", code, stderr.String())
+	}
+	handle, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.WithPiAuth(func(document []byte) error {
+		if strings.Contains(string(document), canary) || !strings.Contains(string(document), "replacement") {
+			t.Fatalf("stored replacement = %q", document)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := app.Run([]string{"auth", "logout", "openai-subscription"}); code != 0 {
+		t.Fatalf("logout exit = %d, stderr = %q", code, stderr.String())
+	}
+	present, err := store.Present()
+	if err != nil || present {
+		t.Fatalf("credential after logout: present=%v err=%v", present, err)
+	}
+}
+
+func TestSubscriptionRunReportsMissingCredentialAsAuthentication(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	definition := filepath.Join(root, "package", "agents", "reviewer.yaml")
+	if err := os.MkdirAll(filepath.Join(root, "package", "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package", "prompts", "main.tmpl"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(definition), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(definition, []byte("schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-subscription\n  model: test\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.NewStoreAt(filepath.Join(root, "agentrun"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.runtimeVerifier = successfulRuntimeVerifier{}
+	app.subscriptionStore = store
+	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
+		t.Fatalf("run exit = %d", code)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "AUTHENTICATION") {
+		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	}
+}
+
 type successfulRuntimeVerifier struct{}
 
 func (successfulRuntimeVerifier) Verify(context.Context) (contract.RuntimeIdentity, error) {
@@ -137,3 +220,7 @@ type unavailableRuntimeVerifier struct{}
 func (unavailableRuntimeVerifier) Verify(context.Context) (contract.RuntimeIdentity, error) {
 	return contract.RuntimeIdentity{}, &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime image is unavailable"}
 }
+
+type subscriptionLoginFunc func(context.Context) ([]byte, error)
+
+func (f subscriptionLoginFunc) Login(ctx context.Context) ([]byte, error) { return f(ctx) }

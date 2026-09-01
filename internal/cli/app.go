@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Ameb8/agent-run/internal/agent"
+	"github.com/Ameb8/agent-run/internal/auth"
 	"github.com/Ameb8/agent-run/internal/contract"
 	agentruntime "github.com/Ameb8/agent-run/internal/runtime"
 )
@@ -24,14 +26,21 @@ type Command struct {
 }
 
 type App struct {
-	commands        []Command
-	stderr          io.Writer
-	stdout          io.Writer
-	runtimeVerifier runtimeVerifier
+	commands          []Command
+	stderr            io.Writer
+	stdout            io.Writer
+	runtimeVerifier   runtimeVerifier
+	subscriptionStore auth.Store
+	subscriptionLogin subscriptionLogin
+	authSetupError    error
 }
 
 type runtimeVerifier interface {
 	Verify(context.Context) (contract.RuntimeIdentity, error)
+}
+
+type subscriptionLogin interface {
+	Login(context.Context) ([]byte, error)
 }
 
 func New(stderr io.Writer) *App {
@@ -41,9 +50,13 @@ func New(stderr io.Writer) *App {
 // NewWithWriters is useful to embedding callers and command tests.
 func NewWithWriters(stdout, stderr io.Writer) *App {
 	app := &App{stderr: stderr, stdout: stdout}
+	app.subscriptionStore, app.authSetupError = auth.NewStore()
 	verifier, err := agentruntime.NewVerifier(agentruntime.NewDockerInspector(), agentruntime.BuildVersion)
 	if err == nil {
 		app.runtimeVerifier = verifier
+		app.subscriptionLogin = agentruntime.NewSubscriptionLogin(*verifier, os.Stdin, stdout, stderr)
+	} else if app.authSetupError == nil {
+		app.authSetupError = err
 	}
 	app.commands = app.registeredCommands()
 	return app
@@ -88,11 +101,44 @@ func (a *App) registeredCommands() []Command {
 		{Path: []string{"list"}, Execute: a.list},
 		{Path: []string{"validate"}, Execute: a.validate},
 		{Path: []string{"inspect"}, Execute: a.inspect},
-		stub("auth", "login", "openai-subscription"),
-		stub("auth", "logout", "openai-subscription"),
+		{Path: []string{"auth", "login", "openai-subscription"}, Execute: a.loginOpenAISubscription},
+		{Path: []string{"auth", "logout", "openai-subscription"}, Execute: a.logoutOpenAISubscription},
 		stub("version"),
 		stub("doctor"),
 	}
+}
+
+func (a *App) loginOpenAISubscription(args []string) error {
+	if len(args) != 0 {
+		return validationError("usage: auth login openai-subscription")
+	}
+	if a.authSetupError != nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication is unavailable"}
+	}
+	if a.subscriptionLogin == nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication is unavailable"}
+	}
+	document, err := a.subscriptionLogin.Login(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := a.subscriptionStore.Replace(document); err != nil {
+		return &contract.CommandError{Category: contract.ErrorAuthentication, Message: "OpenAI subscription login did not produce a usable credential"}
+	}
+	return nil
+}
+
+func (a *App) logoutOpenAISubscription(args []string) error {
+	if len(args) != 0 {
+		return validationError("usage: auth logout openai-subscription")
+	}
+	if a.authSetupError != nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication is unavailable"}
+	}
+	if err := a.subscriptionStore.Logout(); err != nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication storage is unavailable"}
+	}
+	return nil
 }
 
 // run performs the package-selection boundary that must precede all trusted
@@ -135,6 +181,14 @@ func (a *App) run(args []string) error {
 	}
 	if _, err := a.runtimeVerifier.Verify(context.Background()); err != nil {
 		return err
+	}
+	if snapshot.Definition.Agent.Model.Provider == contract.ProviderOpenAISubscription {
+		if _, err := a.subscriptionStore.Open(); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return &contract.CommandError{Category: contract.ErrorAuthentication, Message: "OpenAI subscription authentication is required"}
+			}
+			return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication storage is unavailable"}
+		}
 	}
 	return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "command is not implemented"}
 }
