@@ -17,6 +17,7 @@ import (
 	"github.com/Ameb8/agent-run/internal/agent"
 	"github.com/Ameb8/agent-run/internal/auth"
 	"github.com/Ameb8/agent-run/internal/contract"
+	"github.com/Ameb8/agent-run/internal/provider"
 	agentruntime "github.com/Ameb8/agent-run/internal/runtime"
 )
 
@@ -182,13 +183,19 @@ func (a *App) run(args []string) error {
 	if _, err := a.runtimeVerifier.Verify(context.Background()); err != nil {
 		return err
 	}
+	var subscription auth.Handle
 	if snapshot.Definition.Agent.Model.Provider == contract.ProviderOpenAISubscription {
-		if _, err := a.subscriptionStore.Open(); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+		var credentialErr error
+		subscription, credentialErr = a.subscriptionStore.Open()
+		if credentialErr != nil {
+			if errors.Is(credentialErr, fs.ErrNotExist) {
 				return &contract.CommandError{Category: contract.ErrorAuthentication, Message: "OpenAI subscription authentication is required"}
 			}
 			return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication storage is unavailable"}
 		}
+	}
+	if _, err := provider.Prepare(snapshot.Definition.Agent.Model, os.LookupEnv, subscription); err != nil {
+		return err
 	}
 	return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "command is not implemented"}
 }
