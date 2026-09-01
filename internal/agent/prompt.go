@@ -288,6 +288,13 @@ func RenderPrompt(definition Definition, supplied map[string]string) (string, er
 	return rendered.String(), nil
 }
 
+// ValidatePrompt performs the package-only portion of prompt validation. It
+// deliberately does not require invocation inputs or render a prompt.
+func ValidatePrompt(definition Definition) error {
+	_, _, err := parsePrompt(definition)
+	return err
+}
+
 func parsePrompt(definition Definition) (*template.Template, string, error) {
 	allPaths := append(append([]string(nil), definition.PromptIncludes...), definition.PromptTemplate)
 	owners := make(map[string]string)
