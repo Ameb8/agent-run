@@ -84,6 +84,25 @@ func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
 	}
 }
 
+func TestContainerStartsWaitsAndForceRemovesProcessTree(t *testing.T) {
+	t.Parallel()
+	runner := &sandboxRunner{}
+	container := Container{ID: "container-id", command: runner}
+	if err := container.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, err := container.Wait(context.Background())
+	if err != nil || exitCode != 17 {
+		t.Fatalf("Wait() = %d, %v", exitCode, err)
+	}
+	if err := container.Terminate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.calls; !reflect.DeepEqual(got, []sandboxCall{{args: []string{"start", "container-id"}}, {args: []string{"wait", "container-id"}}, {args: []string{"rm", "--force", "container-id"}}}) {
+		t.Fatalf("docker calls = %#v", got)
+	}
+}
+
 func TestDockerSandboxFailsClosed(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -223,6 +242,10 @@ func (r *sandboxRunner) Output(_ context.Context, name string, args ...string) (
 		return nil, errors.New("missing docker subcommand")
 	}
 	switch args[0] {
+	case "start":
+		return []byte("container-id\n"), nil
+	case "wait":
+		return []byte("17\n"), nil
 	case "version":
 		if strings.Contains(strings.Join(args, " "), "APIVersion") {
 			if r.apiVersion != "" {

@@ -86,6 +86,42 @@ type Container struct {
 	command commandRunner
 }
 
+// Start starts the container's configured init process. Docker owns that init
+// process and every descendant in its PID namespace, so Remove is also the
+// process-tree termination operation for this container.
+func (c Container) Start(ctx context.Context) error {
+	if c.ID == "" || c.command == nil {
+		return fmt.Errorf("start sandbox container: container is unavailable")
+	}
+	if _, err := c.command.Output(ctx, "docker", "start", c.ID); err != nil {
+		return fmt.Errorf("start sandbox container: %w", err)
+	}
+	return nil
+}
+
+// Wait waits for the container init process and returns its exit status.
+// Docker wait observes the whole container lifecycle, rather than merely the
+// short-lived docker client process started by AgentRun.
+func (c Container) Wait(ctx context.Context) (int, error) {
+	if c.ID == "" || c.command == nil {
+		return 0, fmt.Errorf("wait for sandbox container: container is unavailable")
+	}
+	output, err := c.command.Output(ctx, "docker", "wait", c.ID)
+	if err != nil {
+		return 0, fmt.Errorf("wait for sandbox container: %w", err)
+	}
+	status, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, fmt.Errorf("wait for sandbox container: invalid exit status")
+	}
+	return status, nil
+}
+
+// Terminate removes the container with Docker's force semantics. Docker kills
+// the container init and its PID-namespace descendants before deleting the
+// container, so this is deliberately stronger than stopping only the launcher.
+func (c Container) Terminate(ctx context.Context) error { return c.Remove(ctx) }
+
 // Remove tears down a created container. It is safe to call after a failed or
 // completed run and intentionally uses Docker rather than a host namespace.
 func (c Container) Remove(ctx context.Context) error {
