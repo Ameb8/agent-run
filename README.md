@@ -45,19 +45,21 @@ variables before invoking Task; do not place secrets in command-line inputs.
 This mirrors the CLI's documented preference for input files for sensitive or
 large values.
 
-## Linux release bundle
+## Linux release bundles
 
-Build a versioned Linux/amd64 distribution with Docker Engine available:
+Build versioned Linux/amd64 and Linux/arm64 distributions with Docker Engine
+available:
 
 ```sh
 task release:bundle VERSION=1.0.0
 ```
 
-The resulting `dist/agentrun-1.0.0-linux-amd64.tar.gz` contains the static Go
-binary, the private OCI runtime archive, and its authoritative manifest. After
-unpacking, run `install.sh`; it imports the included image with `docker load`
-and never contacts an image registry. See [release/README.md](release/README.md)
-for the clean-host qualification steps.
+The resulting architecture-qualified archives each contain a matching static Go
+binary, private OCI runtime archive, authoritative manifest, and installer.
+After unpacking the archive matching the host, run `install.sh`; it imports only
+the included image with `docker load` and never contacts an image registry. See
+[release/README.md](release/README.md) for host requirements and clean-host
+qualification steps.
 
 `agentrun run` reserves stdout for its single JSON result object. Version and
 doctor emit their documented JSON diagnostics; other human diagnostics stay on

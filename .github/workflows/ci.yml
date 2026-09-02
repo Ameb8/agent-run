@@ -55,3 +55,29 @@ jobs:
 
       - name: Build and inspect private runtime
         run: ARCH=${{ matrix.arch }} task runtime:verify
+
+  bundle-assembly:
+    name: Offline bundle assembly checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Task
+        uses: go-task/setup-task@v1
+        with:
+          version: 3.52.0
+
+      - name: Verify installer architecture and tamper checks
+        run: task release:check
+
+      - name: Cross-compile both bundle binaries
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/agentrun-amd64 ./cmd/agentrun
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/agentrun-arm64 ./cmd/agentrun

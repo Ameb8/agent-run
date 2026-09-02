@@ -105,7 +105,7 @@ tasks:
       - ./runtime/verify.sh
 
   release:bundle:
-    desc: Build the versioned Linux/amd64 distribution (requires VERSION and Docker Engine)
+    desc: Build Linux/amd64 and Linux/arm64 distributions (requires VERSION and Docker Engine)
     cmds:
       - |-
         if [ -z "${VERSION:-}" ]; then
@@ -115,6 +115,6 @@ tasks:
         exec ./release/build-linux-bundle.sh "$VERSION"
 
   release:check:
-    desc: Test Linux bundle assembly/install logic without Docker or a registry
+    desc: Test Linux bundle assembly/install failure ordering without Docker or a registry
     cmds:
       - ./release/test-install.sh
