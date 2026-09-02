@@ -1,0 +1,120 @@
+version: '3'
+
+# Go selects the repository-pinned toolchain from go.mod. Keep its build cache
+# in the repository so Task works in restricted CI and developer environments.
+env:
+  GOCACHE: '{{.TASKFILE_DIR}}/.cache/go-build'
+  GOLANGCI_LINT_CACHE: '{{.TASKFILE_DIR}}/.golangci.cache'
+
+tasks:
+  default:
+    desc: List available development commands
+    cmds:
+      - task --list
+
+  build:
+    desc: Build all Go packages
+    cmds:
+      - |-
+        packages="$(go list ./...)" || exit $?
+        if [ -z "$packages" ]; then
+          echo "No Go packages to build yet."
+          exit 0
+        fi
+        go build $packages
+
+  run:
+    desc: Run the CLI (requires AGENT and WORKSPACE)
+    vars:
+      INPUT_KEY: '{{default "request" .INPUT_KEY}}'
+    cmds:
+      - |-
+        if [ -z "${AGENT:-}" ] || [ -z "${WORKSPACE:-}" ]; then
+          echo "task run requires AGENT=<agent-name-or-path> and WORKSPACE=<path>." >&2
+          exit 1
+        fi
+        if [ -n "${INPUT_FILE:-}" ]; then
+          exec go run ./cmd/agentrun run "$AGENT" --workspace "$WORKSPACE" --input-file "$INPUT_KEY=$INPUT_FILE"
+        fi
+        exec go run ./cmd/agentrun run "$AGENT" --workspace "$WORKSPACE"
+
+  test:
+    desc: Run all Go unit tests
+    cmds:
+      - |-
+        packages="$(go list ./...)" || exit $?
+        if [ -z "$packages" ]; then
+          echo "No Go packages to test yet."
+          exit 0
+        fi
+        go test $packages
+
+  format:
+    desc: Apply Go and golangci-lint formatting
+    cmds:
+      - |-
+        packages="$(go list ./...)" || exit $?
+        if [ -z "$packages" ]; then
+          echo "No Go packages to format yet."
+          exit 0
+        fi
+        go fmt $packages
+        go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.2 fmt
+      - task: format:check
+
+  format:check:
+    desc: Verify formatting without modifying files (for CI)
+    cmds:
+      - |-
+        packages="$(go list ./...)" || exit $?
+        if [ -z "$packages" ]; then
+          echo "No Go packages whose formatting needs verification yet."
+          exit 0
+        fi
+        go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.2 fmt --diff
+
+  lint:
+    desc: Run Go vet and the pinned golangci-lint checks
+    cmds:
+      - |-
+        packages="$(go list ./...)" || exit $?
+        if [ -z "$packages" ]; then
+          echo "No Go packages to lint yet."
+          exit 0
+        fi
+        go vet $packages
+        go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.2 run
+
+  ci:
+    desc: Verify formatting, linting, tests, and build checks in order
+    cmds:
+      - task: format:check
+      - task: lint
+      - task: test
+      - task: build
+      - task: release:check
+
+  runtime:build:
+    desc: Build the pinned private runtime as an OCI release artifact
+    cmds:
+      - ./runtime/build.sh
+
+  runtime:verify:
+    desc: Build and smoke-test the private runtime (requires Docker Engine)
+    cmds:
+      - ./runtime/verify.sh
+
+  release:bundle:
+    desc: Build the versioned Linux/amd64 distribution (requires VERSION and Docker Engine)
+    cmds:
+      - |-
+        if [ -z "${VERSION:-}" ]; then
+          echo "task release:bundle requires VERSION=<release-version>." >&2
+          exit 1
+        fi
+        exec ./release/build-linux-bundle.sh "$VERSION"
+
+  release:check:
+    desc: Test Linux bundle assembly/install logic without Docker or a registry
+    cmds:
+      - ./release/test-install.sh

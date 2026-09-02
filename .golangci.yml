@@ -1,0 +1,16 @@
+# Configuration for golangci-lint v2.1.2; see README.md for the pinned command.
+version: "2"
+
+run:
+  go: "1.24"
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - staticcheck

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# This workflow only reads the checked-out revision. It does not need repository
+# writes, tokens, credentials, runtime images, or deployment access.
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Task
+        uses: go-task/setup-task@v1
+        with:
+          version: 3.52.0
+
+      - name: Run CI checks
+        run: task ci
+
+  runtime:
+    name: Private runtime image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Task
+        uses: go-task/setup-task@v1
+        with:
+          version: 3.52.0
+
+      - name: Build and inspect private runtime
+        run: task runtime:verify
