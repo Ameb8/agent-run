@@ -95,12 +95,12 @@ tasks:
       - task: release:check
 
   runtime:build:
-    desc: Build the pinned private runtime as an OCI release artifact
+    desc: Build pinned Linux/amd64 and Linux/arm64 private-runtime OCI artifacts
     cmds:
       - ./runtime/build.sh
 
   runtime:verify:
-    desc: Build and smoke-test the private runtime (requires Docker Engine)
+    desc: Build and smoke-test the native private runtime (ARCH=amd64 or arm64)
     cmds:
       - ./runtime/verify.sh
 

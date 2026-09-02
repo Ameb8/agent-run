@@ -6,15 +6,17 @@ runtime_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "${runtime_dir}/.." && pwd)"
 source "${runtime_dir}/versions.env"
 manifest="${repo_dir}/internal/runtime/manifest.json"
+architecture="${ARCH:-$(uname -m)}"
+case "${architecture}" in x86_64|amd64) architecture=amd64; node_image="${NODE_IMAGE_AMD64}" ;; aarch64|arm64) architecture=arm64; node_image="${NODE_IMAGE_ARM64}" ;; *) echo "unsupported runtime architecture: ${architecture}" >&2; exit 2 ;; esac
 pi_package="$(sed -n 's/^[[:space:]]*"package":[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}")"
 pi_version="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}")"
 javascript_version="$(sed -n 's/^[[:space:]]*"javascript_version":[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}")"
-image_tag="$(sed -n 's/^[[:space:]]*"image":[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}")"
+image_tag="$(awk -v arch="${architecture}" '$0 ~ "\"" arch "\"[[:space:]]*:" { in_arch=1; next } in_arch && /"image"[[:space:]]*:/ { sub(/.*: *"/, ""); sub(/".*/, ""); print; exit }' "${manifest}")"
 node_version="${javascript_version#v}"
 test -n "${pi_package}" -a -n "${pi_version}" -a -n "${node_version}" -a -n "${image_tag}"
-docker buildx build --load --file "${runtime_dir}/Dockerfile" --platform linux/amd64 \
+docker buildx build --load --file "${runtime_dir}/Dockerfile" --platform "linux/${architecture}" \
   --provenance=false --sbom=false --tag "${image_tag}" \
-  --build-arg "NODE_IMAGE=${NODE_IMAGE}" \
+  --build-arg "NODE_IMAGE=${node_image}" \
   --build-arg "NODE_VERSION=${node_version}" \
   --build-arg "PI_PACKAGE=${pi_package}" \
   --build-arg "PI_VERSION=${pi_version}" \
@@ -43,4 +45,4 @@ docker run --rm --network none "${image_tag}" grep -F "\"pi_version\": \"${pi_ve
 docker run --rm --network none "${image_tag}" grep -F "\"javascript_version\": \"${javascript_version}\"" /usr/share/agentrun/runtime.json
 
 # A release-style OCI archive and its declared manifest must be available.
-"${runtime_dir}/build.sh" "${repo_dir}/dist"
+"${runtime_dir}/build.sh" "${repo_dir}/dist" "${architecture}"

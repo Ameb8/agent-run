@@ -36,6 +36,14 @@ func (l SubscriptionLogin) Login(ctx context.Context) ([]byte, error) {
 	if _, err := l.Verifier.Verify(ctx); err != nil {
 		return nil, err
 	}
+	architecture, err := HostArchitecture()
+	if err != nil {
+		return nil, err
+	}
+	image, err := l.Verifier.Manifest.ImageFor(architecture)
+	if err != nil {
+		return nil, err
+	}
 	if l.run == nil {
 		return nil, configurationError("interactive login runner is unavailable")
 	}
@@ -54,7 +62,7 @@ func (l SubscriptionLogin) Login(ctx context.Context) ([]byte, error) {
 		"--env", "HOME=/agentrun/home",
 		"--mount", "type=bind,src=" + home + ",dst=/agentrun/home",
 		"--tmpfs", "/tmp:mode=700",
-		l.Verifier.Manifest.Image, "pi", "--provider", "openai-codex",
+		image.Image, "pi", "--provider", "openai-codex",
 	}
 	if _, err := fmt.Fprintln(l.Stderr, "Complete the ChatGPT Plus/Pro login in Pi: enter /login and select OpenAI Codex, then exit Pi."); err != nil {
 		return nil, err

@@ -16,18 +16,18 @@ import (
 func TestDockerInspectorUsesOnlyLocalImageInspect(t *testing.T) {
 	t.Parallel()
 
-	runner := &recordingRunner{output: []byte(`["registry.example/agentrun@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]`)}
+	runner := &recordingRunner{output: []byte(`["registry.example/agentrun@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] linux amd64`)}
 	inspector := DockerInspector{command: runner}
-	digests, err := inspector.LocalImageDigests(context.Background(), "agentrun-runtime:private")
+	image, err := inspector.LocalImage(context.Background(), "agentrun-runtime:private")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runner.name != "docker" || !reflect.DeepEqual(runner.args, []string{"image", "inspect", "--format", "{{json .RepoDigests}}", "agentrun-runtime:private"}) {
+	if runner.name != "docker" || !reflect.DeepEqual(runner.args, []string{"image", "inspect", "--format", "{{json .RepoDigests}} {{.Os}} {{.Architecture}}", "agentrun-runtime:private"}) {
 		t.Fatalf("command = %q %q", runner.name, runner.args)
 	}
 	want := []string{"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-	if !reflect.DeepEqual(digests, want) {
-		t.Fatalf("digests = %q, want %q", digests, want)
+	if !reflect.DeepEqual(image.Digests, want) || image.OS != "linux" || image.Architecture != "amd64" {
+		t.Fatalf("image = %#v, want digests %q linux/amd64", image, want)
 	}
 }
 
@@ -45,9 +45,10 @@ func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
 	}
 	runner := &sandboxRunner{}
 	sandbox := DockerSandbox{
-		Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}},
+		Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}},
 		command:  runner,
 		goos:     "linux",
+		arch:     "amd64",
 	}
 	container, err := sandbox.Create(context.Background(), SandboxRequest{
 		Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: temporary, Permission: contract.PermissionReadOnly,
@@ -126,7 +127,7 @@ func TestDockerSandboxFailsClosed(t *testing.T) {
 		{name: "engine rejects nonrecursive bind", goos: "linux", runner: &sandboxRunner{createErr: errors.New("unknown bind-recursive")}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: test.runner, goos: test.goos}
+			sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}}, command: test.runner, goos: test.goos, arch: "amd64"}
 			_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: temporary, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
 			var commandError *contract.CommandError
 			if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
@@ -149,7 +150,7 @@ func TestDockerSandboxRejectsMountOptionInjectionPaths(t *testing.T) {
 		}
 	}
 	runner := &sandboxRunner{}
-	sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: runner, goos: "linux"}
+	sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}}, command: runner, goos: "linux", arch: "amd64"}
 	_, err := sandbox.Create(context.Background(), SandboxRequest{Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: temporary, Permission: contract.PermissionReadWrite, Command: []string{"pi"}})
 	var commandError *contract.CommandError
 	if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
@@ -179,7 +180,7 @@ func TestDockerSandboxRejectsMissingOrOverlappingRunPaths(t *testing.T) {
 		{Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: workspace, Permission: contract.PermissionReadOnly, Command: []string{"pi"}},
 	} {
 		runner := &sandboxRunner{}
-		sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}}, command: runner, goos: "linux"}
+		sandbox := DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}}, command: runner, goos: "linux", arch: "amd64"}
 		_, err := sandbox.Create(context.Background(), request)
 		var commandError *contract.CommandError
 		if !errors.As(err, &commandError) || commandError.Category != contract.ErrorConfiguration {
@@ -305,8 +306,8 @@ func TestDockerInspectorRejectsUnavailableOrMalformedMetadata(t *testing.T) {
 	t.Parallel()
 
 	for _, runner := range []*recordingRunner{{err: errors.New("missing")}, {output: []byte(`not-json`)}} {
-		if _, err := (DockerInspector{command: runner}).LocalImageDigests(context.Background(), "image"); err == nil {
-			t.Fatal("LocalImageDigests() succeeded")
+		if _, err := (DockerInspector{command: runner}).LocalImage(context.Background(), "image"); err == nil {
+			t.Fatal("LocalImage() succeeded")
 		}
 	}
 }

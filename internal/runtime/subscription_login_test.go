@@ -22,7 +22,15 @@ func TestSubscriptionLoginUsesVerifiedPinnedRuntimeAndTemporaryPiHome(t *testing
 	var gotName string
 	var gotArgs []string
 	var stderr bytes.Buffer
-	login := NewSubscriptionLogin(Verifier{Manifest: manifest, Inspector: loginImageInspector{digest: manifest.ImageDigest}}, strings.NewReader(""), &bytes.Buffer{}, &stderr)
+	architecture, err := HostArchitecture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := manifest.ImageFor(architecture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	login := NewSubscriptionLogin(Verifier{Manifest: manifest, Inspector: loginImageInspector{digest: image.ImageDigest, architecture: architecture}}, strings.NewReader(""), &bytes.Buffer{}, &stderr)
 	login.run = func(_ context.Context, name string, args []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 		gotName, gotArgs = name, append([]string(nil), args...)
 		var home string
@@ -44,7 +52,7 @@ func TestSubscriptionLoginUsesVerifiedPinnedRuntimeAndTemporaryPiHome(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotName != "docker" || !containsArg(gotArgs, manifest.Image) || !containsArg(gotArgs, "openai-codex") || !containsArg(gotArgs, "--read-only") {
+	if gotName != "docker" || !containsArg(gotArgs, image.Image) || !containsArg(gotArgs, "openai-codex") || !containsArg(gotArgs, "--read-only") {
 		t.Fatalf("interactive login command = %q %q", gotName, gotArgs)
 	}
 	if !strings.Contains(string(document), "canary") || strings.Contains(stderr.String(), "canary") {
@@ -52,10 +60,10 @@ func TestSubscriptionLoginUsesVerifiedPinnedRuntimeAndTemporaryPiHome(t *testing
 	}
 }
 
-type loginImageInspector struct{ digest string }
+type loginImageInspector struct{ digest, architecture string }
 
-func (i loginImageInspector) LocalImageDigests(context.Context, string) ([]string, error) {
-	return []string{i.digest}, nil
+func (i loginImageInspector) LocalImage(context.Context, string) (LocalImage, error) {
+	return LocalImage{Digests: []string{i.digest}, OS: "linux", Architecture: i.architecture}, nil
 }
 
 func containsArg(args []string, target string) bool {

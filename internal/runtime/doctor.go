@@ -58,8 +58,13 @@ func NewDoctor(verifier Verifier) Doctor {
 }
 
 func (d Doctor) Run(ctx context.Context) DoctorReport {
+	architecture := d.sandbox.arch
+	if architecture == "" {
+		architecture = runtimeArchitectureForReport()
+	}
+	identity, _ := d.sandbox.Verifier.Manifest.Identity(d.sandbox.Verifier.Version, architecture)
 	report := DoctorReport{
-		Runtime:      d.sandbox.Verifier.Manifest.Identity(d.sandbox.Verifier.Version),
+		Runtime:      identity,
 		BuiltInTools: d.sandbox.Verifier.Manifest.BuiltInTools,
 	}
 	if d.sandbox.goos != "linux" {
@@ -82,7 +87,7 @@ func (d Doctor) Run(ctx context.Context) DoctorReport {
 		// file was sufficient.
 		report.Checks = append(report.Checks, DoctorCheck{"sandbox", DoctorMissing, "Docker Engine cannot create the required sandbox"})
 		report.Checks = append(report.Checks, DoctorCheck{"bundled_tools", DoctorMissing, "private runtime cannot be probed without Docker"})
-	} else if _, err := d.sandbox.Verifier.Verify(ctx); err != nil {
+	} else if _, err := d.sandbox.Verifier.VerifyPlatform(ctx, d.sandbox.goos, d.sandbox.arch); err != nil {
 		report.Checks = append(report.Checks,
 			doctorFailure("private_image", err),
 			DoctorCheck{"sandbox", DoctorMissing, "required sandbox cannot be probed until the private runtime image is installed"},
@@ -96,6 +101,14 @@ func (d Doctor) Run(ctx context.Context) DoctorReport {
 	}
 	report.Checks = append(report.Checks, d.probeEgress())
 	return report
+}
+
+func runtimeArchitectureForReport() string {
+	architecture, err := HostArchitecture()
+	if err != nil {
+		return ""
+	}
+	return architecture
 }
 
 func (d Doctor) probeEgress() DoctorCheck {

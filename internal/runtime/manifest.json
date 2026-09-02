@@ -1,7 +1,15 @@
 {
-  "schema_version": 1,
-  "image": "agentrun-runtime:private",
-  "image_digest": "sha256:68743e5dc0aed0db80ca1d5275d68919b45c1f2ad8bf85f7823f4d47fbaea659",
+  "schema_version": 2,
+  "images": {
+    "amd64": {
+      "image": "agentrun-runtime:private-amd64",
+      "image_digest": "sha256:68743e5dc0aed0db80ca1d5275d68919b45c1f2ad8bf85f7823f4d47fbaea659"
+    },
+    "arm64": {
+      "image": "agentrun-runtime:private-arm64",
+      "image_digest": "sha256:2ece07549015f9f89019b2ffb8d7f96cb53f55fe90ee7cfbf7060dc86bea3154"
+    }
+  },
   "pi": {
     "package": "@earendil-works/pi-coding-agent",
     "version": "0.74.0"

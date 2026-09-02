@@ -11,9 +11,10 @@ func TestDoctorProbesRuntimeBoundaryWithoutStartingAModel(t *testing.T) {
 	t.Parallel()
 	runner := &doctorCommand{}
 	doctor := Doctor{sandbox: DockerSandbox{
-		Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}, Version: "test"},
+		Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}, Version: "test"},
 		command:  runner,
 		goos:     "linux",
+		arch:     "amd64",
 	}, egressProbe: probeEgress}
 	report := doctor.Run(context.Background())
 	if !report.Passing() {
@@ -79,23 +80,23 @@ func TestDoctorReportsEachProbeFailureWithoutLeakingItsCause(t *testing.T) {
 	}{
 		{
 			name: "missing image", check: "private_image", status: DoctorMissing, noCall: "create",
-			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{err: fmt.Errorf("credential-canary image not found")}, Version: "test"}, command: &doctorCommand{}, goos: "linux"}, egressProbe: probeEgress},
+			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{err: fmt.Errorf("credential-canary image not found")}, Version: "test"}, command: &doctorCommand{}, goos: "linux", arch: "amd64"}, egressProbe: probeEgress},
 		},
 		{
 			name: "unsupported Docker API", check: "docker", status: DoctorUnsupported,
-			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}, Version: "test"}, command: &doctorCommand{apiVersion: "1.44"}, goos: "linux"}, egressProbe: probeEgress},
+			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}, Version: "test"}, command: &doctorCommand{apiVersion: "1.44"}, goos: "linux", arch: "amd64"}, egressProbe: probeEgress},
 		},
 		{
 			name: "missing Docker access", check: "docker", status: DoctorMissing,
-			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}, Version: "test"}, command: &doctorCommand{engineErr: true}, goos: "linux"}, egressProbe: probeEgress},
+			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}, Version: "test"}, command: &doctorCommand{engineErr: true}, goos: "linux", arch: "amd64"}, egressProbe: probeEgress},
 		},
 		{
 			name: "sandbox isolation", check: "sandbox", status: DoctorFail,
-			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}, Version: "test"}, command: &doctorCommand{badIsolation: true}, goos: "linux"}, egressProbe: probeEgress},
+			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}, Version: "test"}, command: &doctorCommand{badIsolation: true}, goos: "linux", arch: "amd64"}, egressProbe: probeEgress},
 		},
 		{
 			name: "bundled tools", check: "bundled_tools", status: DoctorFail,
-			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{digests: []string{testDigest}}, Version: "test"}, command: &doctorCommand{exitStatus: 1}, goos: "linux"}, egressProbe: probeEgress},
+			doctor: Doctor{sandbox: DockerSandbox{Verifier: Verifier{Manifest: testManifest(), Inspector: fakeInspector{image: goodLocalImage()}, Version: "test"}, command: &doctorCommand{exitStatus: 1}, goos: "linux", arch: "amd64"}, egressProbe: probeEgress},
 		},
 		{
 			name: "egress proxy", check: "egress_proxy", status: DoctorFail,

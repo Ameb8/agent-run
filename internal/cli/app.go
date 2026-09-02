@@ -73,7 +73,9 @@ func New(stderr io.Writer) *App {
 func NewWithWriters(stdout, stderr io.Writer) *App {
 	app := &App{stderr: stderr, stdout: stdout, stdin: os.Stdin, lookupEnv: os.LookupEnv, prepareProvider: provider.Prepare}
 	if manifest, err := agentruntime.LoadManifest(); err == nil {
-		app.runtimeIdentity = manifest.Identity(agentruntime.BuildVersion)
+		if architecture, platformErr := agentruntime.HostArchitecture(); platformErr == nil {
+			app.runtimeIdentity, _ = manifest.Identity(agentruntime.BuildVersion, architecture)
+		}
 	}
 	app.subscriptionStore, app.authSetupError = auth.NewStore()
 	verifier, err := agentruntime.NewVerifier(agentruntime.NewDockerInspector(), agentruntime.BuildVersion)

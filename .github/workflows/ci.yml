@@ -34,8 +34,16 @@ jobs:
         run: task ci
 
   runtime:
-    name: Private runtime image
-    runs-on: ubuntu-latest
+    name: Private runtime image (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -46,4 +54,4 @@ jobs:
           version: 3.52.0
 
       - name: Build and inspect private runtime
-        run: task runtime:verify
+        run: ARCH=${{ matrix.arch }} task runtime:verify

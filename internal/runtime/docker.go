@@ -14,7 +14,7 @@ import (
 	"github.com/Ameb8/agent-run/internal/contract"
 )
 
-// DockerInspector reads Docker's local RepoDigests metadata. docker image
+// DockerInspector reads Docker's local image metadata. docker image
 // inspect does not pull images, and this implementation never invokes a run,
 // search, tag substitution, pi, or Node.js command.
 type DockerInspector struct {
@@ -35,17 +35,21 @@ func NewDockerInspector() DockerInspector {
 	return DockerInspector{command: execRunner{}}
 }
 
-func (d DockerInspector) LocalImageDigests(ctx context.Context, image string) ([]string, error) {
+func (d DockerInspector) LocalImage(ctx context.Context, image string) (LocalImage, error) {
 	if d.command == nil {
-		return nil, fmt.Errorf("docker command runner is unavailable")
+		return LocalImage{}, fmt.Errorf("docker command runner is unavailable")
 	}
-	output, err := d.command.Output(ctx, "docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image)
+	output, err := d.command.Output(ctx, "docker", "image", "inspect", "--format", "{{json .RepoDigests}} {{.Os}} {{.Architecture}}", image)
 	if err != nil {
-		return nil, err
+		return LocalImage{}, err
+	}
+	parts := strings.Fields(string(output))
+	if len(parts) != 3 {
+		return LocalImage{}, fmt.Errorf("decode docker image metadata")
 	}
 	var references []string
-	if err := json.Unmarshal(output, &references); err != nil {
-		return nil, fmt.Errorf("decode docker image digests: %w", err)
+	if err := json.Unmarshal([]byte(parts[0]), &references); err != nil {
+		return LocalImage{}, fmt.Errorf("decode docker image digests: %w", err)
 	}
 	digests := make([]string, 0, len(references))
 	for _, reference := range references {
@@ -55,7 +59,7 @@ func (d DockerInspector) LocalImageDigests(ctx context.Context, image string) ([
 		}
 		digests = append(digests, reference[at+1:])
 	}
-	return digests, nil
+	return LocalImage{Digests: digests, OS: parts[1], Architecture: parts[2]}, nil
 }
 
 const (
@@ -141,10 +145,11 @@ type DockerSandbox struct {
 	Verifier Verifier
 	command  commandRunner
 	goos     string
+	arch     string
 }
 
 func NewDockerSandbox(verifier Verifier) DockerSandbox {
-	return DockerSandbox{Verifier: verifier, command: execRunner{}, goos: runtime.GOOS}
+	return DockerSandbox{Verifier: verifier, command: execRunner{}, goos: runtime.GOOS, arch: runtime.GOARCH}
 }
 
 // Create verifies the Linux Docker Engine and private image, then creates a
@@ -155,13 +160,16 @@ func (s DockerSandbox) Create(ctx context.Context, request SandboxRequest) (Cont
 	if s.goos == "" {
 		s.goos = runtime.GOOS
 	}
+	if s.arch == "" {
+		s.arch = runtime.GOARCH
+	}
 	if s.goos != "linux" {
 		return Container{}, configurationError("AgentRun v1 requires a Linux host")
 	}
 	if s.command == nil {
 		return Container{}, configurationError("docker command runner is unavailable")
 	}
-	if _, err := s.Verifier.Verify(ctx); err != nil {
+	if _, err := s.Verifier.VerifyPlatform(ctx, s.goos, s.arch); err != nil {
 		return Container{}, err
 	}
 	if err := s.verifyEngine(ctx); err != nil {
@@ -314,7 +322,18 @@ func (s DockerSandbox) createArgs(workspace, resources, configuration, temporary
 	for _, entry := range request.Environment.Entries() {
 		args = append(args, "--env", entry)
 	}
-	args = append(args, s.Verifier.Manifest.Image)
+	architecture := s.arch
+	if architecture == "" {
+		architecture = runtime.GOARCH
+	}
+	if architecture != "amd64" && architecture != "arm64" {
+		return nil, configurationError("private runtime does not support linux/%s", architecture)
+	}
+	image, err := s.Verifier.Manifest.ImageFor(architecture)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, image.Image)
 	args = append(args, request.Command...)
 	return args, nil
 }
