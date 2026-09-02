@@ -1,0 +1,32 @@
+schema_version: 1
+name: bug-fixer
+description: Read-write agent that investigates, reproduces, and fixes issues directly in the workspace
+
+model:
+  provider: openai-subscription
+  model: o3-mini
+
+skills:
+  - git-workflow
+
+tools:
+  allow:
+    - read
+    - grep
+    - edit
+    - write
+    - shell
+
+permission: read-write
+
+prompt:
+  template: prompts/fixer.md.tmpl
+  inputs:
+    required:
+      - issue_description
+    optional:
+      - reproduction_steps
+
+limits:
+  max_turns: 25
+  timeout_s: 900

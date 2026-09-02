@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "High-level summary of the review findings"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "request_changes", "comment"],
+      "description": "Final recommendation for this code change"
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "warning", "nit"]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["file", "severity", "message"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["summary", "verdict", "comments"],
+  "additionalProperties": false
+}

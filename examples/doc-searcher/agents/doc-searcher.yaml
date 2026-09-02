@@ -1,0 +1,41 @@
+schema_version: 1
+name: doc-searcher
+description: Read-only agent that queries external documentation APIs using an extension and egress allowlist
+
+model:
+  provider: openai-compatible
+  endpoint: https://api.openai.com/v1
+  model: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+
+tools:
+  extensions:
+    - doc-fetcher
+  allow:
+    - read
+    - grep
+    - fetch_docs
+
+network:
+  mode: allowlist
+  hosts:
+    - docs.github.com
+    - api.github.com
+
+environment:
+  allow:
+    - GITHUB_TOKEN
+
+permission: read-only
+
+prompt:
+  template: prompts/searcher.md.tmpl
+  inputs:
+    required:
+      - query
+    optional:
+      - topic
+
+limits:
+  max_turns: 10
+  timeout_s: 300

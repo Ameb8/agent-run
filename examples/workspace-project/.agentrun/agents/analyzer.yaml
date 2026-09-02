@@ -1,0 +1,28 @@
+schema_version: 1
+name: analyzer
+description: Workspace-embedded static analysis and code health checker
+
+model:
+  provider: openai-compatible
+  endpoint: https://api.openai.com/v1
+  model: gpt-4o
+  api_key_env: OPENAI_API_KEY
+
+tools:
+  allow:
+    - read
+    - grep
+
+permission: read-only
+
+prompt:
+  template: prompts/analyze.md.tmpl
+  inputs:
+    required:
+      - target_path
+    optional:
+      - focus_area
+
+limits:
+  max_turns: 10
+  timeout_s: 300

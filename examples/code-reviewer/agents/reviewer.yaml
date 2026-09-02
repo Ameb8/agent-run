@@ -1,0 +1,34 @@
+schema_version: 1
+name: reviewer
+description: Read-only code reviewer that analyzes code diffs and produces structured review comments
+
+model:
+  provider: openai-compatible
+  endpoint: https://api.openai.com/v1
+  model: gpt-4o
+  api_key_env: OPENAI_API_KEY
+
+skills:
+  - code-review
+
+tools:
+  allow:
+    - read
+    - grep
+
+permission: read-only
+
+prompt:
+  template: prompts/reviewer.md.tmpl
+  inputs:
+    required:
+      - diff
+    optional:
+      - pr_description
+
+output:
+  schema: schemas/review-output.json
+
+limits:
+  max_turns: 15
+  timeout_s: 600
