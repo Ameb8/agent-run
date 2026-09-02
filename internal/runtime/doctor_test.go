@@ -45,8 +45,9 @@ func TestDoctorFailureProvidesActionableImageAndDockerDetails(t *testing.T) {
 		name, check, cause, want string
 		status                   DoctorStatus
 	}{
-		{"missing image", "private_image", "private runtime image is unavailable", "install the release-owned image", DoctorMissing},
+		{"missing image", "private_image", "private runtime image is unavailable", "install or load the matching AgentRun release bundle image", DoctorMissing},
 		{"wrong digest", "private_image", "private runtime image does not match release digest", "digest does not match", DoctorFail},
+		{"wrong architecture", "private_image", "private runtime image platform is linux/arm64, want linux/amd64", "architecture does not match this host", DoctorFail},
 		{"missing Docker", "docker", "Docker Engine is unavailable", "unavailable to the invoking user", DoctorMissing},
 		{"unsupported Docker", "docker", "Docker Engine API 1.45 or newer is required", "does not support", DoctorUnsupported},
 	} {
@@ -54,6 +55,9 @@ func TestDoctorFailureProvidesActionableImageAndDockerDetails(t *testing.T) {
 			check := doctorFailure(test.check, fmt.Errorf("%s credential-canary", test.cause))
 			if check.Status != test.status || !strings.Contains(check.Detail, test.want) || strings.Contains(check.Detail, "credential-canary") {
 				t.Fatalf("check = %#v", check)
+			}
+			if test.name == "missing image" && (!strings.Contains(check.Detail, "agentrun auth login openai-subscription") || !strings.Contains(check.Detail, "cannot install the image")) {
+				t.Fatalf("image remediation = %#v", check)
 			}
 		})
 	}

@@ -26,9 +26,10 @@ const (
 )
 
 type DoctorCheck struct {
-	Name   string       `json:"name"`
-	Status DoctorStatus `json:"status"`
-	Detail string       `json:"detail"`
+	Name     string       `json:"name"`
+	Status   DoctorStatus `json:"status"`
+	Detail   string       `json:"detail"`
+	Optional bool         `json:"optional,omitempty"`
 }
 
 type DoctorReport struct {
@@ -39,7 +40,7 @@ type DoctorReport struct {
 
 func (r DoctorReport) Passing() bool {
 	for _, check := range r.Checks {
-		if check.Status != DoctorPass {
+		if !check.Optional && check.Status != DoctorPass {
 			return false
 		}
 	}
@@ -80,18 +81,18 @@ func (d Doctor) Run(ctx context.Context) DoctorReport {
 	if err := d.sandbox.verifyEngine(ctx); err != nil {
 		// An inaccessible engine makes image metadata unknowable; do not report
 		// the image itself as absent in that case.
-		report.Checks = append(report.Checks, DoctorCheck{"private_image", DoctorMissing, "private runtime image cannot be inspected until Docker Engine is available"})
+		report.Checks = append(report.Checks, DoctorCheck{Name: "private_image", Status: DoctorMissing, Detail: "private runtime image cannot be inspected until Docker Engine is available"})
 		report.Checks = append(report.Checks, doctorFailure("docker", err))
 		// Creating a probe cannot add useful evidence if Docker itself is not
 		// usable.  Report it explicitly rather than implying a configuration
 		// file was sufficient.
-		report.Checks = append(report.Checks, DoctorCheck{"sandbox", DoctorMissing, "Docker Engine cannot create the required sandbox"})
-		report.Checks = append(report.Checks, DoctorCheck{"bundled_tools", DoctorMissing, "private runtime cannot be probed without Docker"})
+		report.Checks = append(report.Checks, DoctorCheck{Name: "sandbox", Status: DoctorMissing, Detail: "Docker Engine cannot create the required sandbox"})
+		report.Checks = append(report.Checks, DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "private runtime cannot be probed without Docker"})
 	} else if _, err := d.sandbox.Verifier.VerifyPlatform(ctx, d.sandbox.goos, d.sandbox.arch); err != nil {
 		report.Checks = append(report.Checks,
 			doctorFailure("private_image", err),
-			DoctorCheck{"sandbox", DoctorMissing, "required sandbox cannot be probed until the private runtime image is installed"},
-			DoctorCheck{"bundled_tools", DoctorMissing, "private runtime tools cannot be probed until the private runtime image is installed"},
+			DoctorCheck{Name: "sandbox", Status: DoctorMissing, Detail: "required sandbox cannot be probed until the private runtime image is installed"},
+			DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "private runtime tools cannot be probed until the private runtime image is installed"},
 		)
 	} else {
 		report.Checks = append(report.Checks, doctorPass("private_image", "installed private image matches the release digest"))
@@ -121,12 +122,12 @@ func (d Doctor) probeEgress() DoctorCheck {
 func (d Doctor) probeSandbox(ctx context.Context) (DoctorCheck, DoctorCheck) {
 	workspace, err := os.MkdirTemp("", "agentrun-doctor-workspace-")
 	if err != nil {
-		return DoctorCheck{"sandbox", DoctorFail, "cannot create an isolated sandbox probe"}, DoctorCheck{"bundled_tools", DoctorMissing, "sandbox probe is unavailable"}
+		return DoctorCheck{Name: "sandbox", Status: DoctorFail, Detail: "cannot create an isolated sandbox probe"}, DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox probe is unavailable"}
 	}
 	defer os.RemoveAll(workspace)
 	scope, err := NewRunScope()
 	if err != nil {
-		return DoctorCheck{"sandbox", DoctorFail, "cannot create private sandbox storage"}, DoctorCheck{"bundled_tools", DoctorMissing, "sandbox probe is unavailable"}
+		return DoctorCheck{Name: "sandbox", Status: DoctorFail, Detail: "cannot create private sandbox storage"}, DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox probe is unavailable"}
 	}
 	defer scope.Close()
 	container, err := d.sandbox.Create(ctx, SandboxRequest{
@@ -134,20 +135,20 @@ func (d Doctor) probeSandbox(ctx context.Context) (DoctorCheck, DoctorCheck) {
 		Permission: contract.PermissionReadOnly, Command: []string{"bash", "-c", "pi --version && node --version && command -v bash && command -v rg"},
 	})
 	if err != nil {
-		return doctorFailure("sandbox", err), DoctorCheck{"bundled_tools", DoctorMissing, "sandbox probe could not be created"}
+		return doctorFailure("sandbox", err), DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox probe could not be created"}
 	}
 	defer container.Remove(context.Background())
 	if err := d.inspectProbe(ctx, container.ID, workspace, scope.Resources, scope.Configuration, scope.Temporary); err != nil {
-		return doctorFailure("sandbox", err), DoctorCheck{"bundled_tools", DoctorMissing, "sandbox isolation probe failed"}
+		return doctorFailure("sandbox", err), DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox isolation probe failed"}
 	}
 	if err := container.Start(ctx); err != nil {
-		return doctorFailure("sandbox", err), DoctorCheck{"bundled_tools", DoctorMissing, "private image could not start"}
+		return doctorFailure("sandbox", err), DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "private image could not start"}
 	}
 	status, err := container.Wait(ctx)
 	if err != nil || status != 0 {
-		return DoctorCheck{"sandbox", DoctorPass, "required mount, process, and network isolation is enforced"}, DoctorCheck{"bundled_tools", DoctorFail, "private image is missing a required bundled tool"}
+		return DoctorCheck{Name: "sandbox", Status: DoctorPass, Detail: "required mount, process, and network isolation is enforced"}, DoctorCheck{Name: "bundled_tools", Status: DoctorFail, Detail: "private image is missing a required bundled tool"}
 	}
-	return DoctorCheck{"sandbox", DoctorPass, "required mount, process, and network isolation is enforced"}, DoctorCheck{"bundled_tools", DoctorPass, "pi, JavaScript, bash, and ripgrep are available in the private image"}
+	return DoctorCheck{Name: "sandbox", Status: DoctorPass, Detail: "required mount, process, and network isolation is enforced"}, DoctorCheck{Name: "bundled_tools", Status: DoctorPass, Detail: "pi, JavaScript, bash, and ripgrep are available in the private image"}
 }
 
 func (d Doctor) inspectProbe(ctx context.Context, id, workspace, resources, configuration, temporary string) error {
@@ -207,16 +208,16 @@ func (d Doctor) inspectProbe(ctx context.Context, id, workspace, resources, conf
 func probeEgress() DoctorCheck {
 	proxy, err := egress.New(contract.Network{Mode: contract.NetworkNone}, doctorResolver{})
 	if err != nil {
-		return DoctorCheck{"egress_proxy", DoctorFail, "cannot construct the egress proxy"}
+		return DoctorCheck{Name: "egress_proxy", Status: DoctorFail, Detail: "cannot construct the egress proxy"}
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodConnect, "http://example.invalid", nil)
 	request.Host = "example.invalid:443"
 	proxy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
-		return DoctorCheck{"egress_proxy", DoctorFail, "egress proxy did not deny disabled network access"}
+		return DoctorCheck{Name: "egress_proxy", Status: DoctorFail, Detail: "egress proxy did not deny disabled network access"}
 	}
-	return DoctorCheck{"egress_proxy", DoctorPass, "egress proxy denies direct tool network access by default"}
+	return DoctorCheck{Name: "egress_proxy", Status: DoctorPass, Detail: "egress proxy denies direct tool network access by default"}
 }
 
 // doctorResolver is never asked to resolve an address by the deny-by-default
@@ -253,9 +254,11 @@ func doctorFailure(name string, err error) DoctorCheck {
 	switch name {
 	case "private_image":
 		if status == DoctorMissing {
-			detail = "private runtime image is missing; install the release-owned image"
+			detail = "private runtime image is missing; install or load the matching AgentRun release bundle image before authentication (agentrun auth login openai-subscription cannot install the image)"
+		} else if strings.Contains(message, "platform is") || strings.Contains(message, "want linux/") {
+			detail = "private runtime image architecture does not match this host; install or load the matching AgentRun release bundle image"
 		} else if strings.Contains(message, "does not match") {
-			detail = "private runtime image digest does not match the release"
+			detail = "private runtime image digest does not match the release; install or load the matching AgentRun release bundle image"
 		}
 	case "docker":
 		switch status {

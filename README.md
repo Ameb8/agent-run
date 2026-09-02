@@ -65,6 +65,15 @@ qualification steps.
 doctor emit their documented JSON diagnostics; other human diagnostics stay on
 stderr.
 
+For an installed bundle, invoke commands as `agentrun ...`; for example,
+`agentrun doctor` and, only when an `openai-subscription` agent needs it,
+`agentrun auth login openai-subscription`. In a source checkout, use
+`go run ./cmd/agentrun ...` instead. `agentrun validate` and `agentrun inspect`
+are static package checks: neither proves Docker/image/sandbox readiness nor
+validates a provider endpoint or credential. Use `agentrun doctor` for required
+host/runtime readiness; its missing optional subscription-auth check does not
+block `openai-compatible` agents.
+
 The `.gitignore` intentionally ignores only ephemeral AgentRun paths below
 `.agentrun/` (`cache`, `runs`, and `tmp`): definitions, prompts, skills, and
 extensions remain visible to Git. Local `.env` files and common credential file

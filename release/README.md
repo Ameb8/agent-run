@@ -37,9 +37,15 @@ tar -xzf agentrun-<version>-linux-arm64.tar.gz
 Use the AMD64 archive equivalently on x86_64 Linux. `version` reports the
 architecture-selected private-runtime digest. `doctor` verifies the local image
 digest, Docker/API and sandbox prerequisites, bundled tools, and egress proxy
-without making a model request. Subscription authentication is reported
-separately; an OpenAI-compatible smoke agent can use a controlled local/test
-provider credential rather than a maintainer subscription.
+without making a model request. A `subscription_auth` check with
+`"optional":true` is informational: a clean install without a subscription
+credential passes doctor and can run `openai-compatible` agents. First install
+or load the matching release bundle image, then pass the required doctor
+checks, and only then, when running an `openai-subscription` agent, run
+`agentrun auth login openai-subscription`. Authentication cannot install the
+private image. Subscription presence is not credential validation; an
+OpenAI-compatible smoke agent can use a controlled local/test provider
+credential rather than a maintainer subscription.
 
 For release qualification, use a clean native host of each architecture with
 registry egress denied: install the matching bundle, run `version` and

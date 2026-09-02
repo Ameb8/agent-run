@@ -252,15 +252,17 @@ func (a *App) doctor(args []string) error {
 		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime diagnostics are unavailable"}
 	}
 	report := a.runtimeDoctor.Run(context.Background())
-	credential := agentruntime.DoctorCheck{Name: "subscription_auth", Status: agentruntime.DoctorMissing, Detail: "OpenAI subscription authentication is not present; run auth login openai-subscription"}
+	credential := agentruntime.DoctorCheck{Name: "subscription_auth", Status: agentruntime.DoctorMissing, Detail: "OpenAI subscription authentication is optional and not configured; run agentrun auth login openai-subscription only before running an openai-subscription agent", Optional: true}
 	if a.authSetupError != nil {
 		credential.Status = agentruntime.DoctorFail
 		credential.Detail = "OpenAI subscription authentication storage is unavailable"
+		credential.Optional = false
 	} else {
 		present, err := a.subscriptionStore.Present()
 		if err != nil {
 			credential.Status = agentruntime.DoctorFail
 			credential.Detail = "OpenAI subscription authentication storage is unavailable"
+			credential.Optional = false
 		} else if present {
 			credential.Status = agentruntime.DoctorPass
 			credential.Detail = "OpenAI subscription authentication is present (credentials were not validated)"

@@ -29,7 +29,7 @@ make_bundle() {
 #!/usr/bin/env sh
 case "\$1" in
 version) printf '%s\\n' '{"agentrun_version":"test","pi_version":"1.0.0","javascript_version":"v22.0.0","image_digest":"${digest}"}' ;;
-doctor) exit 0 ;;
+doctor) printf '%s\\n' '{"checks":[{"name":"subscription_auth","status":"MISSING","optional":true}]}' ; exit "\${AGENTRUN_TEST_DOCTOR_EXIT:-0}" ;;
 *) exit 1 ;;
 esac
 SH
@@ -42,6 +42,10 @@ native_bundle="${work}/${native_arch}"; native_prefix="${work}/native-prefix"; m
 PATH="${fake_bin}:/usr/bin:/bin" "${native_bundle}/install.sh" --prefix "${native_prefix}" >/dev/null
 test -x "${native_prefix}/bin/agentrun"; test -f "${native_prefix}/share/agentrun/runtime.json"
 grep -Fx "load --input ${native_bundle}/share/agentrun/runtime.oci.tar" "${calls}" >/dev/null
+
+# A clean bundle installation is ready before optional subscription login.
+# The fixture's doctor report deliberately has only missing optional auth.
+test -x "${native_prefix}/bin/agentrun"
 
 # Wrong host must stop before Docker or prefix mutation.
 : > "${calls}"; other_bundle="${work}/${other_arch}"; other_prefix="${work}/other-prefix"; make_bundle "${other_arch}" "${other_bundle}"
@@ -65,3 +69,9 @@ done
 if AGENTRUN_TEST_DOCKER_LOAD_FAIL=1 PATH="${fake_bin}:/usr/bin:/bin" "${native_bundle}/install.sh" --prefix "${load_prefix}" >/dev/null 2>&1; then exit 1; fi
 test ! -e "${load_prefix}"
 grep -Fx "load --input ${native_bundle}/share/agentrun/runtime.oci.tar" "${calls}" >/dev/null
+
+# Required doctor failures still fail installation after the image is imported;
+# retaining the prefix gives the user the installed doctor command for diagnosis.
+: > "${calls}"; doctor_prefix="${work}/doctor-prefix"
+if AGENTRUN_TEST_DOCTOR_EXIT=1 PATH="${fake_bin}:/usr/bin:/bin" "${native_bundle}/install.sh" --prefix "${doctor_prefix}" >/dev/null 2>&1; then exit 1; fi
+test -x "${doctor_prefix}/bin/agentrun"

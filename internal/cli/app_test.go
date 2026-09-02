@@ -34,7 +34,7 @@ func TestAllV1CommandsAreRegistered(t *testing.T) {
 	}{
 		{[]string{"run"}, 1}, {[]string{"validate"}, 1}, {[]string{"inspect"}, 1},
 		{[]string{"auth", "login", "openai-subscription", "unexpected"}, 1},
-		{[]string{"auth", "logout", "openai-subscription", "unexpected"}, 1}, {[]string{"version"}, 0}, {[]string{"doctor"}, 1},
+		{[]string{"auth", "logout", "openai-subscription", "unexpected"}, 1}, {[]string{"version"}, 0}, {[]string{"doctor"}, 0},
 	} {
 		if exitCode := app.Run(test.args); exitCode != test.code {
 			t.Errorf("Run(%q) exit code = %d, want %d", test.args, exitCode, test.code)
@@ -122,11 +122,44 @@ func TestDoctorReportsMissingSubscriptionWithoutCheckingAnyProvider(t *testing.T
 		t.Fatal("doctor must not validate arbitrary provider credentials")
 		return nil, nil
 	}
+	if code := app.Run([]string{"doctor"}); code != 0 {
+		t.Fatalf("doctor exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"name":"subscription_auth","status":"MISSING"`) || !strings.Contains(stdout.String(), `"optional":true`) || !strings.Contains(stdout.String(), "agentrun auth login openai-subscription") {
+		t.Fatalf("doctor output = %q", stdout.String())
+	}
+}
+
+func TestDoctorFailsWhenSubscriptionStorageCannotBeChecked(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.authSetupError = os.ErrPermission
+	app.runtimeDoctor = doctorFunc(func(context.Context) agentruntime.DoctorReport {
+		return agentruntime.DoctorReport{Runtime: app.runtimeIdentity, Checks: []agentruntime.DoctorCheck{{Name: "probe", Status: agentruntime.DoctorPass}}}
+	})
 	if code := app.Run([]string{"doctor"}); code != 1 {
 		t.Fatalf("doctor exit = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"name":"subscription_auth","status":"MISSING"`) || !strings.Contains(stdout.String(), "run auth login openai-subscription") {
+	if !strings.Contains(stdout.String(), `"name":"subscription_auth","status":"FAIL"`) || strings.Contains(stdout.String(), `"optional":true`) {
 		t.Fatalf("doctor output = %q", stdout.String())
+	}
+}
+
+func TestDoctorFailsForARequiredCheckEvenWhenSubscriptionIsOptional(t *testing.T) {
+	root := t.TempDir()
+	store, err := auth.NewStoreAt(filepath.Join(root, "agentrun"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.subscriptionStore = store
+	app.authSetupError = nil
+	app.runtimeDoctor = doctorFunc(func(context.Context) agentruntime.DoctorReport {
+		return agentruntime.DoctorReport{Runtime: app.runtimeIdentity, Checks: []agentruntime.DoctorCheck{{Name: "sandbox", Status: agentruntime.DoctorFail, Detail: "isolation failed"}}}
+	})
+	if code := app.Run([]string{"doctor"}); code != 1 {
+		t.Fatalf("doctor exit = %d, stderr = %q", code, stderr.String())
 	}
 }
 
@@ -309,12 +342,55 @@ func TestSubscriptionRunReportsMissingCredentialAsAuthentication(t *testing.T) {
 	app := NewWithWriters(&stdout, &stderr)
 	app.runtimeVerifier = successfulRuntimeVerifier{}
 	app.subscriptionStore = store
+	app.prepareProvider = func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error) {
+		t.Fatal("missing subscription authentication must fail before provider access")
+		return nil, nil
+	}
 	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
 		t.Fatalf("run exit = %d", code)
 	}
 	got := decodeRunResult(t, stdout.Bytes())
 	if got["error_type"] != string(contract.ErrorAuthentication) || stderr.Len() != 0 {
 		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	}
+}
+
+func TestOpenAICompatibleRunDoesNotRequireSubscriptionAuthentication(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	definition := filepath.Join(root, "package", "agents", "reviewer.yaml")
+	if err := os.MkdirAll(filepath.Join(root, "package", "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package", "prompts", "main.tmpl"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definitionContents := "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-compatible\n  endpoint: https://models.example/v1\n  model: test\n  api_key_env: MODEL_KEY\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n"
+	if err := os.MkdirAll(filepath.Dir(definition), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(definition, []byte(definitionContents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.runtimeVerifier = successfulRuntimeVerifier{}
+	app.authSetupError = os.ErrPermission // An unrelated subscription store must not block this provider.
+	app.lookupEnv = func(name string) (string, bool) { return "compatible-key", name == "MODEL_KEY" }
+	providerPrepared := false
+	app.prepareProvider = func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error) {
+		providerPrepared = true
+		return nil, nil
+	}
+	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
+		t.Fatalf("run exit = %d", code)
+	}
+	got := decodeRunResult(t, stdout.Bytes())
+	if !providerPrepared || got["error_type"] == string(contract.ErrorAuthentication) || stderr.Len() != 0 {
+		t.Fatalf("providerPrepared=%v stdout=%q stderr=%q", providerPrepared, stdout.String(), stderr.String())
 	}
 }
 
