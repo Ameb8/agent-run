@@ -12,6 +12,7 @@ import (
 	"github.com/Ameb8/agent-run/internal/auth"
 	"github.com/Ameb8/agent-run/internal/contract"
 	"github.com/Ameb8/agent-run/internal/provider"
+	agentruntime "github.com/Ameb8/agent-run/internal/runtime"
 )
 
 func TestAllV1CommandsAreRegistered(t *testing.T) {
@@ -24,13 +25,19 @@ func TestAllV1CommandsAreRegistered(t *testing.T) {
 
 	var stderr bytes.Buffer
 	app := New(&stderr)
-	for _, args := range [][]string{
-		{"run"}, {"validate"}, {"inspect"},
-		{"auth", "login", "openai-subscription", "unexpected"},
-		{"auth", "logout", "openai-subscription", "unexpected"}, {"version"}, {"doctor"},
+	app.runtimeDoctor = doctorFunc(func(context.Context) agentruntime.DoctorReport {
+		return agentruntime.DoctorReport{Runtime: app.runtimeIdentity, Checks: []agentruntime.DoctorCheck{{Name: "probe", Status: agentruntime.DoctorPass}}}
+	})
+	for _, test := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"run"}, 1}, {[]string{"validate"}, 1}, {[]string{"inspect"}, 1},
+		{[]string{"auth", "login", "openai-subscription", "unexpected"}, 1},
+		{[]string{"auth", "logout", "openai-subscription", "unexpected"}, 1}, {[]string{"version"}, 0}, {[]string{"doctor"}, 1},
 	} {
-		if exitCode := app.Run(args); exitCode != 1 {
-			t.Errorf("Run(%q) exit code = %d, want 1", args, exitCode)
+		if exitCode := app.Run(test.args); exitCode != test.code {
+			t.Errorf("Run(%q) exit code = %d, want %d", test.args, exitCode, test.code)
 		}
 	}
 }
@@ -45,6 +52,81 @@ func TestDiagnosticsDoNotUseStdout(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "unknown command") {
 		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestVersionEmitsOnlyStableReleaseIdentity(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	want := contract.RuntimeIdentity{
+		AgentRunVersion:   "1.2.3",
+		PiVersion:         "0.74.0",
+		JavaScriptVersion: "v22.14.0",
+		ImageDigest:       "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	app.runtimeIdentity = want
+	if code := app.Run([]string{"version"}); code != 0 {
+		t.Fatalf("version exit = %d, stderr = %q", code, stderr.String())
+	}
+	var got contract.RuntimeIdentity
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || got != want {
+		t.Fatalf("version = %q, decoded = %#v, error = %v", stdout.String(), got, err)
+	}
+}
+
+func TestDoctorReportsOnlyCredentialPresenceAndNeverPreparesAProvider(t *testing.T) {
+	root := t.TempDir()
+	store, err := auth.NewStoreAt(filepath.Join(root, "agentrun"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const canary = "doctor-subscription-secret-canary"
+	if err := store.Replace([]byte(`{"openai-codex":{"type":"oauth","access":"` + canary + `"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.subscriptionStore = store
+	app.authSetupError = nil
+	app.runtimeDoctor = doctorFunc(func(context.Context) agentruntime.DoctorReport {
+		return agentruntime.DoctorReport{Runtime: app.runtimeIdentity, Checks: []agentruntime.DoctorCheck{{Name: "probe", Status: agentruntime.DoctorPass}}}
+	})
+	app.prepareProvider = func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error) {
+		t.Fatal("doctor must not prepare a provider or make a model request")
+		return nil, nil
+	}
+	if code := app.Run([]string{"doctor"}); code != 0 {
+		t.Fatalf("doctor exit = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), canary) || !strings.Contains(stdout.String(), "credentials were not validated") {
+		t.Fatalf("doctor output = %q", stdout.String())
+	}
+}
+
+func TestDoctorReportsMissingSubscriptionWithoutCheckingAnyProvider(t *testing.T) {
+	root := t.TempDir()
+	store, err := auth.NewStoreAt(filepath.Join(root, "agentrun"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.subscriptionStore = store
+	app.authSetupError = nil
+	app.runtimeDoctor = doctorFunc(func(context.Context) agentruntime.DoctorReport {
+		return agentruntime.DoctorReport{Runtime: app.runtimeIdentity, Checks: []agentruntime.DoctorCheck{{Name: "probe", Status: agentruntime.DoctorPass}}}
+	})
+	app.prepareProvider = func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error) {
+		t.Fatal("doctor must not validate arbitrary provider credentials")
+		return nil, nil
+	}
+	if code := app.Run([]string{"doctor"}); code != 1 {
+		t.Fatalf("doctor exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"name":"subscription_auth","status":"MISSING"`) || !strings.Contains(stdout.String(), "run auth login openai-subscription") {
+		t.Fatalf("doctor output = %q", stdout.String())
 	}
 }
 
@@ -302,6 +384,10 @@ type unavailableRuntimeVerifier struct{}
 func (unavailableRuntimeVerifier) Verify(context.Context) (contract.RuntimeIdentity, error) {
 	return contract.RuntimeIdentity{}, &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime image is unavailable"}
 }
+
+type doctorFunc func(context.Context) agentruntime.DoctorReport
+
+func (f doctorFunc) Run(ctx context.Context) agentruntime.DoctorReport { return f(ctx) }
 
 type subscriptionLoginFunc func(context.Context) ([]byte, error)
 

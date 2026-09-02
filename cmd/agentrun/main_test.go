@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestCLIProcessKeepsDiagnosticsOffStdout(t *testing.T) {
+func TestCLIProcessEmitsReleaseOwnedVersionIdentity(t *testing.T) {
 	t.Parallel()
 
 	_, file, _, ok := runtime.Caller(0)
@@ -23,16 +23,20 @@ func TestCLIProcessKeepsDiagnosticsOffStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	err := command.Run()
-	var exitError *exec.ExitError
-	if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
-		t.Fatalf("Run() error = %v, want exit status 1", err)
+	if err := command.Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
-	if got := stdout.String(); got != "" {
-		t.Fatalf("stdout = %q, want empty", got)
+	var identity map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &identity); err != nil {
+		t.Fatalf("stdout = %q, want version JSON: %v", stdout.String(), err)
 	}
-	if got := stderr.String(); got == "" {
-		t.Fatal("stderr is empty")
+	for _, field := range []string{"agentrun_version", "pi_version", "javascript_version", "image_digest"} {
+		if identity[field] == "" {
+			t.Fatalf("version identity = %#v, missing %s", identity, field)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 

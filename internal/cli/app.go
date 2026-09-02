@@ -34,6 +34,7 @@ type App struct {
 	stderr            io.Writer
 	stdout            io.Writer
 	runtimeVerifier   runtimeVerifier
+	runtimeDoctor     doctorRunner
 	subscriptionStore auth.Store
 	subscriptionLogin subscriptionLogin
 	authSetupError    error
@@ -55,6 +56,10 @@ type runtimeVerifier interface {
 	Verify(context.Context) (contract.RuntimeIdentity, error)
 }
 
+type doctorRunner interface {
+	Run(context.Context) agentruntime.DoctorReport
+}
+
 type subscriptionLogin interface {
 	Login(context.Context) ([]byte, error)
 }
@@ -73,6 +78,7 @@ func NewWithWriters(stdout, stderr io.Writer) *App {
 	verifier, err := agentruntime.NewVerifier(agentruntime.NewDockerInspector(), agentruntime.BuildVersion)
 	if err == nil {
 		app.runtimeVerifier = verifier
+		app.runtimeDoctor = agentruntime.NewDoctor(*verifier)
 		app.subscriptionLogin = agentruntime.NewSubscriptionLogin(*verifier, os.Stdin, stdout, stderr)
 	} else if app.authSetupError == nil {
 		app.authSetupError = err
@@ -215,9 +221,56 @@ func (a *App) registeredCommands() []Command {
 		{Path: []string{"inspect"}, Execute: a.inspect},
 		{Path: []string{"auth", "login", "openai-subscription"}, Execute: a.loginOpenAISubscription},
 		{Path: []string{"auth", "logout", "openai-subscription"}, Execute: a.logoutOpenAISubscription},
-		stub("version"),
-		stub("doctor"),
+		{Path: []string{"version"}, Execute: a.version},
+		{Path: []string{"doctor"}, Execute: a.doctor},
 	}
+}
+
+// version reports only release-owned identity fields. It does not inspect the
+// host and therefore never substitutes a PATH-discovered pi or Node runtime.
+func (a *App) version(args []string) error {
+	if len(args) != 0 {
+		return validationError("usage: version")
+	}
+	if a.runtimeIdentity.AgentRunVersion == "" || a.runtimeIdentity.PiVersion == "" || a.runtimeIdentity.JavaScriptVersion == "" || a.runtimeIdentity.ImageDigest == "" {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime manifest is unavailable"}
+	}
+	return json.NewEncoder(a.stdout).Encode(a.runtimeIdentity)
+}
+
+// doctor is deliberately definition-free: it checks the installed runtime
+// boundary and the optional managed subscription's presence, but cannot and
+// does not contact arbitrary agent providers.
+func (a *App) doctor(args []string) error {
+	if len(args) != 0 {
+		return validationError("usage: doctor")
+	}
+	if a.runtimeDoctor == nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "private runtime diagnostics are unavailable"}
+	}
+	report := a.runtimeDoctor.Run(context.Background())
+	credential := agentruntime.DoctorCheck{Name: "subscription_auth", Status: agentruntime.DoctorMissing, Detail: "OpenAI subscription authentication is not present; run auth login openai-subscription"}
+	if a.authSetupError != nil {
+		credential.Status = agentruntime.DoctorFail
+		credential.Detail = "OpenAI subscription authentication storage is unavailable"
+	} else {
+		present, err := a.subscriptionStore.Present()
+		if err != nil {
+			credential.Status = agentruntime.DoctorFail
+			credential.Detail = "OpenAI subscription authentication storage is unavailable"
+		} else if present {
+			credential.Status = agentruntime.DoctorPass
+			credential.Detail = "OpenAI subscription authentication is present (credentials were not validated)"
+		}
+	}
+	report.Checks = append(report.Checks, credential)
+	if err := json.NewEncoder(a.stdout).Encode(report); err != nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "write doctor report"}
+	}
+	if !report.Passing() {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "doctor found host prerequisites that require attention"}
+	}
+	return nil
 }
 
 func (a *App) loginOpenAISubscription(args []string) error {

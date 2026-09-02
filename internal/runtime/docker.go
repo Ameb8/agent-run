@@ -187,16 +187,22 @@ func (s DockerSandbox) Create(ctx context.Context, request SandboxRequest) (Cont
 
 func (s DockerSandbox) verifyEngine(ctx context.Context) error {
 	output, err := s.command.Output(ctx, "docker", "version", "--format", "{{.Server.Os}}")
-	if err != nil || strings.TrimSpace(string(output)) != "linux" {
+	if err != nil {
+		return configurationError("Docker Engine is unavailable")
+	}
+	if strings.TrimSpace(string(output)) != "linux" {
 		return configurationError("a Linux Docker Engine is required")
 	}
 	output, err = s.command.Output(ctx, "docker", "version", "--format", "{{.Server.APIVersion}}")
-	if err != nil || !supportsNonRecursiveBind(string(output)) {
+	if err != nil {
+		return configurationError("Docker Engine is unavailable")
+	}
+	if !supportsNonRecursiveBind(string(output)) {
 		return configurationError("Docker Engine API 1.45 or newer is required for non-recursive bind mounts")
 	}
 	output, err = s.command.Output(ctx, "docker", "info", "--format", "{{json .SecurityOptions}}")
 	if err != nil {
-		return configurationError("Docker Engine security options are unavailable")
+		return configurationError("Docker Engine is unavailable")
 	}
 	var options []string
 	if err := json.Unmarshal(output, &options); err != nil {
