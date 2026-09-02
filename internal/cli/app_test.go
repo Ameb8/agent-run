@@ -361,6 +361,75 @@ func TestRunRejectsMissingDeclaredEnvironmentBeforeProviderAccess(t *testing.T) 
 	}
 }
 
+func TestParseRunArgsKeepsRunOnlyFlagsOutOfStaticResolution(t *testing.T) {
+	t.Parallel()
+
+	got, err := parseRunArgs([]string{"reviewer", "--workspace", "/work", "--allow-workspace-agent", "--expect-agent-digest", "sha256:abc", "--input", "request=one", "--input-file", "notes=-", "--inputs-json", "inputs.json", "--output-format", "json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.definitionArgs, " ") != "reviewer --workspace /work --allow-workspace-agent" || got.expectedDigest != "sha256:abc" || strings.Join(got.inputs, ",") != "request=one" || strings.Join(got.inputFiles, ",") != "notes=-" || strings.Join(got.inputsJSON, ",") != "inputs.json" {
+		t.Fatalf("parseRunArgs() = %#v", got)
+	}
+}
+
+func TestParseRunArgsRejectsDuplicateAndUnknownNonRepeatableFlags(t *testing.T) {
+	t.Parallel()
+
+	for _, args := range [][]string{
+		{"reviewer", "--workspace", "/one", "--workspace", "/two"},
+		{"reviewer", "--workspace", "/work", "--allow-workspace-agent", "--allow-workspace-agent"},
+		{"reviewer", "--workspace", "/work", "--expect-agent-digest", "one", "--expect-agent-digest", "two"},
+		{"reviewer", "--workspace", "/work", "--output-format", "text"},
+		{"reviewer", "--workspace", "/work", "--not-a-run-flag"},
+	} {
+		if _, err := parseRunArgs(args); err == nil {
+			t.Errorf("parseRunArgs(%q) succeeded", args)
+		}
+	}
+}
+
+func TestRunReadsAndValidatesInputsBeforeRuntimeAccess(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	definition := filepath.Join(root, "package", "agents", "reviewer.yaml")
+	if err := os.MkdirAll(filepath.Join(root, "package", "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package", "prompts", "main.tmpl"), []byte("{{.request}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(definition), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-subscription\n  model: test\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n  inputs:\n    required: [request]\n"
+	if err := os.WriteFile(definition, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := NewWithWriters(&stdout, &stderr)
+	app.stdin = strings.NewReader("from stdin")
+	app.runtimeVerifier = unavailableRuntimeVerifier{}
+	if code := app.Run([]string{"run", definition, "--workspace", workspace, "--input-file", "request=-"}); code != 1 {
+		t.Fatalf("run exit = %d", code)
+	}
+	if got := decodeRunResult(t, stdout.Bytes()); got["error_type"] != string(contract.ErrorConfiguration) {
+		t.Fatalf("run result = %#v", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.Run([]string{"run", definition, "--workspace", workspace}); code != 1 {
+		t.Fatalf("run exit = %d", code)
+	}
+	if got := decodeRunResult(t, stdout.Bytes()); got["error_type"] != string(contract.ErrorValidation) {
+		t.Fatalf("missing input result = %#v", got)
+	}
+}
+
 func decodeRunResult(t *testing.T, contents []byte) map[string]any {
 	t.Helper()
 	var got map[string]any

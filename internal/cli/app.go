@@ -39,6 +39,7 @@ type App struct {
 	subscriptionLogin subscriptionLogin
 	authSetupError    error
 	lookupEnv         func(string) (string, bool)
+	stdin             io.Reader
 	prepareProvider   func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error)
 	runtimeIdentity   contract.RuntimeIdentity
 	activeRun         *runFacts
@@ -70,7 +71,7 @@ func New(stderr io.Writer) *App {
 
 // NewWithWriters is useful to embedding callers and command tests.
 func NewWithWriters(stdout, stderr io.Writer) *App {
-	app := &App{stderr: stderr, stdout: stdout, lookupEnv: os.LookupEnv, prepareProvider: provider.Prepare}
+	app := &App{stderr: stderr, stdout: stdout, stdin: os.Stdin, lookupEnv: os.LookupEnv, prepareProvider: provider.Prepare}
 	if manifest, err := agentruntime.LoadManifest(); err == nil {
 		app.runtimeIdentity = manifest.Identity(agentruntime.BuildVersion)
 	}
@@ -309,20 +310,11 @@ func (a *App) logoutOpenAISubscription(args []string) error {
 // run performs the package-selection boundary that must precede all trusted
 // extension and model work. The runtime itself is supplied by a later layer.
 func (a *App) run(args []string) error {
-	var expected string
-	filtered := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--expect-agent-digest" {
-			if i+1 >= len(args) {
-				return validationError("--expect-agent-digest requires a digest")
-			}
-			i++
-			expected = args[i]
-			continue
-		}
-		filtered = append(filtered, args[i])
+	options, err := parseRunArgs(args)
+	if err != nil {
+		return err
 	}
-	resolution, err := resolveFromArgs(filtered)
+	resolution, err := resolveFromArgs(options.definitionArgs)
 	if err != nil {
 		return err
 	}
@@ -340,7 +332,22 @@ func (a *App) run(args []string) error {
 		a.activeRun.agent = &contract.PackageIdentity{Name: snapshot.Definition.Agent.Name, Digest: snapshot.Digest}
 		a.activeRun.model = &contract.ModelIdentity{Provider: snapshot.Definition.Agent.Model.Provider, Requested: snapshot.Definition.Agent.Model.Model}
 	}
-	if err := agent.VerifyExpectedDigest(snapshot, expected); err != nil {
+	if err := agent.VerifyExpectedDigest(snapshot, options.expectedDigest); err != nil {
+		return err
+	}
+	// Inputs are intentionally read before a sandbox exists. Their source files
+	// are never mounted implicitly, and all template evaluation reads the
+	// immutable snapshot rather than the mutable selected package.
+	inputs, err := agent.ReadInputs(agent.InputOptions{
+		Values:    options.inputs,
+		Files:     options.inputFiles,
+		JSONFiles: options.inputsJSON,
+		Stdin:     a.stdin,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := agent.RenderPrompt(snapshot.Definition, inputs); err != nil {
 		return err
 	}
 	// Runtime verification happens after static package validation but before any
@@ -385,6 +392,73 @@ func (a *App) run(args []string) error {
 		return environment.Redactor().RedactError(err)
 	}
 	return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "command is not implemented"}
+}
+
+// runOptions separates invocation-only flags from the static package
+// resolver. Keeping this parser here prevents list, validate, and inspect
+// from accepting execution inputs by accident.
+type runOptions struct {
+	definitionArgs []string
+	expectedDigest string
+	inputs         []string
+	inputFiles     []string
+	inputsJSON     []string
+}
+
+func parseRunArgs(args []string) (runOptions, error) {
+	if len(args) == 0 {
+		return runOptions{}, validationError("usage: run <agent-name-or-path> --workspace <path>")
+	}
+	options := runOptions{definitionArgs: []string{args[0]}}
+	seen := make(map[string]bool)
+	for i := 1; i < len(args); i++ {
+		flag := args[i]
+		switch flag {
+		case "--allow-workspace-agent":
+			if seen[flag] {
+				return runOptions{}, validationError("%s may be supplied only once", flag)
+			}
+			seen[flag] = true
+			options.definitionArgs = append(options.definitionArgs, flag)
+		case "--workspace", "--expect-agent-digest", "--input", "--input-file", "--inputs-json", "--output-format":
+			if i+1 >= len(args) {
+				return runOptions{}, validationError("%s requires a value", flag)
+			}
+			i++
+			value := args[i]
+			switch flag {
+			case "--workspace":
+				if seen[flag] {
+					return runOptions{}, validationError("%s may be supplied only once", flag)
+				}
+				seen[flag] = true
+				options.definitionArgs = append(options.definitionArgs, flag, value)
+			case "--expect-agent-digest":
+				if seen[flag] {
+					return runOptions{}, validationError("%s may be supplied only once", flag)
+				}
+				seen[flag] = true
+				options.expectedDigest = value
+			case "--input":
+				options.inputs = append(options.inputs, value)
+			case "--input-file":
+				options.inputFiles = append(options.inputFiles, value)
+			case "--inputs-json":
+				options.inputsJSON = append(options.inputsJSON, value)
+			case "--output-format":
+				if seen[flag] {
+					return runOptions{}, validationError("%s may be supplied only once", flag)
+				}
+				seen[flag] = true
+				if value != "json" {
+					return runOptions{}, validationError("--output-format must be json")
+				}
+			}
+		default:
+			return runOptions{}, validationError("unknown option %q", flag)
+		}
+	}
+	return options, nil
 }
 
 func registeredCommands() []Command { return NewWithWriters(io.Discard, io.Discard).commands }
