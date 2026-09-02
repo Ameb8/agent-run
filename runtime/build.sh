@@ -16,6 +16,7 @@ test -n "${pi_package}" -a -n "${pi_version}" -a -n "${node_version}" -a -n "${i
 mkdir -p "${output_dir}"
 archive="${output_dir}/agentrun-runtime.oci.tar"
 digest_file="${output_dir}/agentrun-runtime.manifest.digest"
+expected_digest="$(sed -n 's/^[[:space:]]*"image_digest":[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}")"
 
 rm -f "${archive}" "${digest_file}"
 docker buildx build --file "${runtime_dir}/Dockerfile" --platform linux/amd64 \
@@ -32,4 +33,8 @@ docker buildx build --file "${runtime_dir}/Dockerfile" --platform linux/amd64 \
 # The OCI index records the content-addressed image manifest.
 tar -xOf "${archive}" index.json | grep -Eo 'sha256:[[:xdigit:]]{64}' | head -n1 > "${digest_file}"
 test -s "${digest_file}"
+if ! cmp -s "${digest_file}" <(printf '%s\n' "${expected_digest}"); then
+  echo "built OCI manifest digest does not match internal/runtime/manifest.json" >&2
+  exit 1
+fi
 printf 'wrote %s (%s)\n' "${archive}" "$(cat "${digest_file}")"

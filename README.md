@@ -22,6 +22,7 @@ task format       # apply formatting
 task format:check # verify formatting without modifying files
 task lint         # run go vet and golangci-lint
 task ci           # run format:check, lint, test, then build
+task release:check # test offline bundle installation logic
 ```
 
 `task ci` is the deterministic local and CI validation command. It never runs
@@ -44,10 +45,23 @@ variables before invoking Task; do not place secrets in command-line inputs.
 This mirrors the CLI's documented preference for input files for sensitive or
 large values.
 
-All registered commands currently report their unimplemented state on stderr
-and write nothing to stdout. This explicitly reserves stdout for the one JSON
-run result required by the v1 contract; a later runtime task owns its
-serialization.
+## Linux release bundle
+
+Build a versioned Linux/amd64 distribution with Docker Engine available:
+
+```sh
+task release:bundle VERSION=1.0.0
+```
+
+The resulting `dist/agentrun-1.0.0-linux-amd64.tar.gz` contains the static Go
+binary, the private OCI runtime archive, and its authoritative manifest. After
+unpacking, run `install.sh`; it imports the included image with `docker load`
+and never contacts an image registry. See [release/README.md](release/README.md)
+for the clean-host qualification steps.
+
+`agentrun run` reserves stdout for its single JSON result object. Version and
+doctor emit their documented JSON diagnostics; other human diagnostics stay on
+stderr.
 
 The `.gitignore` intentionally ignores only ephemeral AgentRun paths below
 `.agentrun/` (`cache`, `runs`, and `tmp`): definitions, prompts, skills, and

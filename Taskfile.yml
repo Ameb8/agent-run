@@ -92,6 +92,7 @@ tasks:
       - task: lint
       - task: test
       - task: build
+      - task: release:check
 
   runtime:build:
     desc: Build the pinned private runtime as an OCI release artifact
@@ -102,3 +103,18 @@ tasks:
     desc: Build and smoke-test the private runtime (requires Docker Engine)
     cmds:
       - ./runtime/verify.sh
+
+  release:bundle:
+    desc: Build the versioned Linux/amd64 distribution (requires VERSION and Docker Engine)
+    cmds:
+      - |-
+        if [ -z "${VERSION:-}" ]; then
+          echo "task release:bundle requires VERSION=<release-version>." >&2
+          exit 1
+        fi
+        exec ./release/build-linux-bundle.sh "$VERSION"
+
+  release:check:
+    desc: Test Linux bundle assembly/install logic without Docker or a registry
+    cmds:
+      - ./release/test-install.sh
