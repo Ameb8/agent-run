@@ -671,18 +671,6 @@ func validationError(format string, args ...any) error {
 	return &contract.CommandError{Category: contract.ErrorValidation, Message: fmt.Sprintf(format, args...)}
 }
 
-func stub(path ...string) Command {
-	return Command{
-		Path: path,
-		Execute: func(_ []string) error {
-			return &contract.CommandError{
-				Category: contract.ErrorConfiguration,
-				Message:  "command is not implemented",
-			}
-		},
-	}
-}
-
 // IsCommandError lets future command handlers distinguish handled failures
 // without matching user-facing diagnostic text.
 func IsCommandError(err error) (*contract.CommandError, bool) {
