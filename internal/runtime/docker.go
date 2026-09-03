@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +90,65 @@ type SandboxRequest struct {
 type Container struct {
 	ID      string
 	command commandRunner
+}
+
+// AttachedProcess is Docker's attached stdio stream for a container init
+// process. Docker retains ownership of the process tree; Close only closes
+// the client-side pipes and Container.Terminate remains the kill operation.
+type AttachedProcess struct {
+	Stdin  io.WriteCloser
+	Stdout io.ReadCloser
+	Stderr io.ReadCloser
+	cmd    *exec.Cmd
+}
+
+// AttachAndStart starts a created container while retaining all three streams.
+// It intentionally invokes Docker rather than a host Pi executable. Callers
+// must consume stdout/stderr themselves; this package never forwards child
+// bytes to AgentRun stdout.
+func (c Container) AttachAndStart(ctx context.Context) (*AttachedProcess, error) {
+	if c.ID == "" {
+		return nil, fmt.Errorf("attach sandbox container: container is unavailable")
+	}
+	cmd := exec.CommandContext(ctx, "docker", "start", "--attach", "--interactive", c.ID)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("attach sandbox stdin: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("attach sandbox stdout: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("attach sandbox stderr: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("attach sandbox container: %w", err)
+	}
+	return &AttachedProcess{Stdin: stdin, Stdout: stdout, Stderr: stderr, cmd: cmd}, nil
+}
+
+func (p *AttachedProcess) Wait() error {
+	if p == nil || p.cmd == nil {
+		return fmt.Errorf("attached sandbox process is unavailable")
+	}
+	return p.cmd.Wait()
+}
+
+func (p *AttachedProcess) Close() {
+	if p == nil {
+		return
+	}
+	if p.Stdin != nil {
+		_ = p.Stdin.Close()
+	}
+	if p.Stdout != nil {
+		_ = p.Stdout.Close()
+	}
+	if p.Stderr != nil {
+		_ = p.Stderr.Close()
+	}
 }
 
 // Start starts the container's configured init process. Docker owns that init

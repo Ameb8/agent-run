@@ -65,6 +65,21 @@ func NewOpenAICompatible(endpoint, apiKey string) (*Transport, error) {
 	return newTransport(endpoint, apiKey)
 }
 
+// NewOpenAICompatibleWithClient is the narrow test/integration seam for a
+// controlled host transport. It retains all origin and authorization checks;
+// the supplied client is never exposed to runtime code.
+func NewOpenAICompatibleWithClient(endpoint, apiKey string, client *http.Client) (*Transport, error) {
+	t, err := NewOpenAICompatible(endpoint, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		return nil, configuration("model provider client is unavailable")
+	}
+	t.client = client
+	return t, nil
+}
+
 // NewOpenAICompatibleFromEnvironment obtains the named credential immediately
 // before a run. lookup is injectable so callers never need to copy secrets into
 // generated runtime configuration merely to construct a transport.

@@ -18,6 +18,7 @@ const (
 	piCodingAgentSessions = "PI_CODING_AGENT_SESSION_DIR"
 	piToolAdapterFile     = "agentrun-tools.ts"
 	piExtensionLoaderFile = "agentrun-extensions.ts"
+	piProviderAdapterFile = "agentrun-provider.ts"
 )
 
 // stableToolAdapter adapts the one Pi built-in whose upstream name is not part
@@ -48,6 +49,59 @@ type PiConfiguration struct {
 	ExtensionLoader string
 	ActiveTools     []string
 	ToolAdapter     string
+	ProviderAdapter string
+}
+
+// GenerateProviderAdapter writes AgentRun's infrastructure extension.  Its
+// endpoint is the run-private Unix socket mounted at /agentrun/tmp, not the
+// configured provider endpoint; consequently neither credentials nor a host
+// route can enter Pi.  The protocol is intentionally JSONL and is consumed by
+// execution.ProviderBridge.
+func GenerateProviderAdapter(configuration string, model string) (string, error) {
+	configuration, err := privateDirectory(configuration, "generated configuration")
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(configuration, "pi"), 0o700); err != nil {
+		return "", configurationError("create provider adapter directory: %v", err)
+	}
+	if strings.TrimSpace(model) == "" {
+		return "", configurationError("provider model is required")
+	}
+	encodedModel, err := json.Marshal(model)
+	if err != nil {
+		return "", configurationError("encode provider model: %v", err)
+	}
+	source := `// AgentRun-owned Pi 0.74 provider adapter. No credentials or provider URL live here.
+import net from "node:net";
+const socket = "/agentrun/tmp/provider.sock";
+const model = ` + string(encodedModel) + `;
+function bridge(request: any): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const peer = net.createConnection(socket); let input = "";
+    peer.once("error", reject);
+    peer.on("data", (chunk) => { input += chunk.toString("utf8"); const lf = input.indexOf("\n"); if (lf >= 0) { peer.end(); try { resolve(JSON.parse(input.slice(0, lf))); } catch (e) { reject(e); } } });
+    peer.on("connect", () => peer.write(JSON.stringify(request) + "\n"));
+  });
+}
+export default function(pi: any) {
+  pi.registerProvider({
+    id: "agentrun", name: "AgentRun", apiKey: "agentrun-private-bridge",
+    models: [{ id: model, name: model }],
+    streamSimple: async (request: any) => {
+      const body = Buffer.from(JSON.stringify(request), "utf8").toString("base64");
+      const reply = await bridge({id: crypto.randomUUID(), method:"POST", target:"responses", headers:{"content-type":["application/json"]}, body});
+      if (!reply.accepted) throw new Error("AgentRun provider bridge rejected request");
+      return JSON.parse(Buffer.from(reply.body, "base64").toString("utf8"));
+    },
+  });
+}
+`
+	path := filepath.Join(configuration, "pi", piProviderAdapterFile)
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		return "", configurationError("write provider adapter: %v", err)
+	}
+	return filepath.ToSlash(filepath.Join(configurationMount, "pi", piProviderAdapterFile)), nil
 }
 
 // GeneratePiConfiguration writes the otherwise-empty Pi settings file and
@@ -239,6 +293,11 @@ func (c PiConfiguration) Command() []string {
 	// list stays empty and Pi additions such as find, ls, or bash never become
 	// AgentRun capabilities by default.
 	command := []string{"pi", "--mode", "rpc", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"}
+	if c.ProviderAdapter != "" {
+		// Must precede every package extension: provider registration is runtime
+		// infrastructure and has to fail before any model operation.
+		command = append(command, "--extension", c.ProviderAdapter)
+	}
 	// Pi receives only the generated adapter and the immutable, declared
 	// extension entry points. --no-extensions still disables all discovery
 	// sources; explicit --extension is the per-run loading mechanism.

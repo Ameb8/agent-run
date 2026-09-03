@@ -219,6 +219,35 @@ export default function (pi: ExtensionAPI) { pi.registerTool({ name: "search_web
 	return scope, snapshot
 }
 
+func TestGenerateProviderAdapterUsesOnlyPrivateBridge(t *testing.T) {
+	configuration := t.TempDir()
+	if err := os.Mkdir(filepath.Join(configuration, "pi"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := GenerateProviderAdapter(configuration, "gpt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter != "/agentrun/config/pi/agentrun-provider.ts" {
+		t.Fatalf("adapter = %q", adapter)
+	}
+	contents, err := os.ReadFile(filepath.Join(configuration, "pi", "agentrun-provider.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, required := range []string{"pi.registerProvider", "streamSimple", "/agentrun/tmp/provider.sock", "gpt-test"} {
+		if !strings.Contains(source, required) {
+			t.Errorf("adapter missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Authorization", "api.openai", "OPENAI_API_KEY"} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("adapter leaks provider configuration %q", forbidden)
+		}
+	}
+}
+
 func piConfigurationFixture(t *testing.T, skills []string, schema bool, tools ...string) (*RunScope, *agent.Snapshot) {
 	t.Helper()
 	scope, err := NewRunScope()
