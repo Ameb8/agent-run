@@ -124,12 +124,12 @@ func (d Doctor) probeSandbox(ctx context.Context) (DoctorCheck, DoctorCheck) {
 	if err != nil {
 		return DoctorCheck{Name: "sandbox", Status: DoctorFail, Detail: "cannot create an isolated sandbox probe"}, DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox probe is unavailable"}
 	}
-	defer os.RemoveAll(workspace)
+	defer func() { _ = os.RemoveAll(workspace) }()
 	scope, err := NewRunScope()
 	if err != nil {
 		return DoctorCheck{Name: "sandbox", Status: DoctorFail, Detail: "cannot create private sandbox storage"}, DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox probe is unavailable"}
 	}
-	defer scope.Close()
+	defer func() { _ = scope.Close() }()
 	container, err := d.sandbox.Create(ctx, SandboxRequest{
 		Workspace: workspace, Resources: scope.Resources, Configuration: scope.Configuration, Temporary: scope.Temporary,
 		Permission: contract.PermissionReadOnly, Command: []string{"bash", "-c", "pi --version && node --version && command -v bash && command -v rg"},
@@ -137,7 +137,7 @@ func (d Doctor) probeSandbox(ctx context.Context) (DoctorCheck, DoctorCheck) {
 	if err != nil {
 		return doctorFailure("sandbox", err), DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox probe could not be created"}
 	}
-	defer container.Remove(context.Background())
+	defer func() { _ = container.Remove(context.Background()) }()
 	if err := d.inspectProbe(ctx, container.ID, workspace, scope.Resources, scope.Configuration, scope.Temporary); err != nil {
 		return doctorFailure("sandbox", err), DoctorCheck{Name: "bundled_tools", Status: DoctorMissing, Detail: "sandbox isolation probe failed"}
 	}
@@ -164,7 +164,7 @@ func (d Doctor) inspectProbe(ctx context.Context, id, workspace, resources, conf
 		PidsLimit      int64
 	}
 	if json.Unmarshal(output, &config) != nil || config.NetworkMode != "none" || !config.ReadonlyRootfs || config.PidsLimit != 256 || !containsFold(config.CapDrop, "ALL") || !containsFold(config.SecurityOpt, "no-new-privileges:true") {
-		return fmt.Errorf("Docker Engine did not apply the required process and network isolation")
+		return fmt.Errorf("required process and network isolation was not applied by Docker Engine")
 	}
 	output, err = d.sandbox.command.Output(ctx, "docker", "inspect", "--format", "{{json .Mounts}}", id)
 	if err != nil {
@@ -178,7 +178,7 @@ func (d Doctor) inspectProbe(ctx context.Context, id, workspace, resources, conf
 		Propagation string
 	}
 	if json.Unmarshal(output, &mounts) != nil {
-		return fmt.Errorf("Docker Engine returned invalid sandbox mount metadata")
+		return fmt.Errorf("invalid sandbox mount metadata was returned by Docker Engine")
 	}
 	expected := map[string]struct {
 		source string
@@ -195,12 +195,12 @@ func (d Doctor) inspectProbe(ctx context.Context, id, workspace, resources, conf
 			continue
 		}
 		if mount.Type != "bind" || mount.Source != want.source || mount.RW != want.rw || mount.Propagation != "rprivate" {
-			return fmt.Errorf("Docker Engine did not apply the required sandbox mounts")
+			return fmt.Errorf("required sandbox mounts were not applied by Docker Engine")
 		}
 		delete(expected, mount.Destination)
 	}
 	if len(expected) != 0 {
-		return fmt.Errorf("Docker Engine did not apply the required sandbox mounts")
+		return fmt.Errorf("required sandbox mounts were not applied by Docker Engine")
 	}
 	return nil
 }

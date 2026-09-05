@@ -44,7 +44,7 @@ func ParseAndValidate(resolution Resolution) (Definition, error) {
 	if err != nil {
 		return Definition{}, validation("agent definition: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	decoder := yaml.NewDecoder(file)
 	decoder.KnownFields(true)
@@ -336,7 +336,7 @@ func validHost(value string) bool {
 			return false
 		}
 		for _, char := range label {
-			if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-') {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
 				return false
 			}
 		}

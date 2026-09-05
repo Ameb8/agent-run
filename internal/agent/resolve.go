@@ -159,7 +159,7 @@ func definitionName(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	decoder := yaml.NewDecoder(file)
 	var document yaml.Node

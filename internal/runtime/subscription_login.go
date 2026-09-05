@@ -51,7 +51,7 @@ func (l SubscriptionLogin) Login(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, configurationError("create private interactive login storage")
 	}
-	defer os.RemoveAll(home)
+	defer func() { _ = os.RemoveAll(home) }()
 	if err := os.Chmod(home, 0o700); err != nil {
 		return nil, configurationError("secure interactive login storage")
 	}

@@ -83,7 +83,7 @@ func (s Store) Replace(piAuthDocument []byte) error {
 		return fmt.Errorf("create credential storage: %w", err)
 	}
 	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
+	defer func() { _ = os.Remove(temporaryName) }()
 	if err := temporary.Chmod(fileMode); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("secure credential storage: %w", err)

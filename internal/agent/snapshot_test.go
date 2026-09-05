@@ -33,7 +33,7 @@ func TestSnapshotIsImmutableAndSelectsOnlyPackageResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if _, err := os.Stat(filepath.Join(snapshot.Root, "unselected", "private.txt")); !os.IsNotExist(err) {
 		t.Fatalf("unselected file stat error = %v", err)
 	}
@@ -58,7 +58,7 @@ func TestSnapshotCanBeStagedInItsRunPrivateParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if filepath.Dir(snapshot.Root) != parent {
 		t.Fatalf("snapshot root %q is not below private parent %q", snapshot.Root, parent)
 	}
@@ -111,7 +111,7 @@ func TestSnapshotRejectsAliasedSelectedTargetsAndDigestPinning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if err := VerifyExpectedDigest(snapshot, snapshot.Digest); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestSnapshotRetainsCompiledOutputValidator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if snapshot.OutputValidator == nil {
 		t.Fatal("OutputValidator is nil")
 	}

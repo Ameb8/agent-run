@@ -15,7 +15,7 @@ import path from "node:path";
 export default function (_pi: ExtensionAPI) { return helper(path.sep); }`,
 		"lib/helper.ts": `export function helper(value: string) { return value; }`,
 	})
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if err := ValidateExtensions(snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestValidateExtensionsRejectsUnsupportedDependenciesAndEscapes(t *testing.T
 	} {
 		t.Run(name, func(t *testing.T) {
 			snapshot := extensionSnapshot(t, files)
-			defer snapshot.Close()
+			defer func() { _ = snapshot.Close() }()
 			err := ValidateExtensions(snapshot)
 			if err == nil || !strings.Contains(err.Error(), "VALIDATION") {
 				t.Fatalf("error = %v, want validation failure", err)
@@ -57,7 +57,7 @@ func extensionSnapshot(t *testing.T, files map[string]string) *Snapshot {
 
 func TestValidateExtensionsRejectsNodeModules(t *testing.T) {
 	snapshot := extensionSnapshot(t, map[string]string{"index.ts": `export default {};`, "node_modules/x/index.js": ""})
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	err := ValidateExtensions(snapshot)
 	if err == nil || !strings.Contains(err.Error(), "dependency directories") {
 		t.Fatalf("error = %v", err)

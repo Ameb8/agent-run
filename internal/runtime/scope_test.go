@@ -11,7 +11,7 @@ func TestRunScopesArePrivateIndependentAndCleanedUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 	second, err := NewRunScope()
 	if err != nil {
 		t.Fatal(err)

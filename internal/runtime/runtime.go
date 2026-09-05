@@ -130,7 +130,7 @@ func validDigest(digest string) bool {
 		return false
 	}
 	for _, character := range digest[len("sha256:"):] {
-		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
 			return false
 		}
 	}

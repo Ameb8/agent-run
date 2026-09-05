@@ -116,7 +116,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 		deny(w, "connection denied")
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	removeHopHeaders(response.Header)
 	copyHeader(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
@@ -152,7 +152,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		deny(w, "connection denied")
 		return
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -163,7 +163,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if _, err := buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		return
 	}
@@ -264,7 +264,7 @@ func canonicalHost(value string) (string, error) {
 			return "", errors.New("hostname must be a DNS name")
 		}
 		for _, character := range label {
-			if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-') {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
 				return "", errors.New("hostname must be a DNS name")
 			}
 		}

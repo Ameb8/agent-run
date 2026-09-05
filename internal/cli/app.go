@@ -343,12 +343,12 @@ func (a *App) run(args []string) error {
 	if err != nil {
 		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: fmt.Sprintf("private run storage: %v", err)}
 	}
-	defer scope.Close()
+	defer func() { _ = scope.Close() }()
 	snapshot, err := agent.CreateSnapshotIn(resolution, scope.Resources)
 	if err != nil {
 		return err
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if a.activeRun != nil {
 		a.activeRun.agent = &contract.PackageIdentity{Name: snapshot.Definition.Agent.Name, Digest: snapshot.Digest}
 		a.activeRun.model = &contract.ModelIdentity{Provider: snapshot.Definition.Agent.Model.Provider, Requested: snapshot.Definition.Agent.Model.Model}
@@ -599,7 +599,7 @@ func (a *App) validate(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if err := agent.ValidatePrompt(snapshot.Definition); err != nil {
 		return err
 	}
@@ -611,7 +611,7 @@ func (a *App) inspect(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	resources, err := snapshotResources(snapshot.Root)
 	if err != nil {
 		return err
