@@ -11,9 +11,62 @@ import (
 
 	"github.com/Ameb8/agent-run/internal/auth"
 	"github.com/Ameb8/agent-run/internal/contract"
+	"github.com/Ameb8/agent-run/internal/execution"
 	"github.com/Ameb8/agent-run/internal/provider"
 	agentruntime "github.com/Ameb8/agent-run/internal/runtime"
 )
+
+type successfulRunExecutor struct{ request execution.AdapterRequest }
+
+func (e *successfulRunExecutor) Execute(_ context.Context, request execution.AdapterRequest) execution.Outcome {
+	e.request = request
+	final := "finished"
+	return execution.Outcome{Final: &final, Result: "finished", TurnsUsed: 2}
+}
+
+func TestRunExecutesRenderedPromptAndEmitsSuccessfulOutcome(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	definition := filepath.Join(root, "package", "agents", "reviewer.yaml")
+	if err := os.MkdirAll(filepath.Join(root, "package", "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package", "prompts", "main.tmpl"), []byte("Review {{.request}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contents := "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-compatible\n  endpoint: https://models.example/v1\n  model: test\n  api_key_env: MODEL_KEY\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n  inputs:\n    required: [request]\n"
+	if err := os.MkdirAll(filepath.Dir(definition), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(definition, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	executor := &successfulRunExecutor{}
+	app := NewWithWriters(&stdout, &stderr)
+	app.runtimeVerifier = successfulRuntimeVerifier{}
+	app.lookupEnv = func(name string) (string, bool) { return "secret", name == "MODEL_KEY" }
+	app.prepareProvider = func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error) {
+		return provider.NewOpenAICompatible("https://models.example/v1", "secret")
+	}
+	app.runExecutor = executor
+	if code := app.Run([]string{"run", definition, "--workspace", workspace, "--input", "request=this"}); code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != string(contract.RunStatusSuccess) || got["result"] != "finished" || got["turns_used"] != float64(2) {
+		t.Fatalf("result = %#v", got)
+	}
+	if executor.request.Prompt != "Review this" || executor.request.Workspace != workspace {
+		t.Fatalf("request = %#v", executor.request)
+	}
+}
 
 func TestAllV1CommandsAreRegistered(t *testing.T) {
 	t.Parallel()
@@ -32,9 +85,13 @@ func TestAllV1CommandsAreRegistered(t *testing.T) {
 		args []string
 		code int
 	}{
-		{[]string{"run"}, 1}, {[]string{"validate"}, 1}, {[]string{"inspect"}, 1},
+		{[]string{"run"}, 1},
+		{[]string{"validate"}, 1},
+		{[]string{"inspect"}, 1},
 		{[]string{"auth", "login", "openai-subscription", "unexpected"}, 1},
-		{[]string{"auth", "logout", "openai-subscription", "unexpected"}, 1}, {[]string{"version"}, 0}, {[]string{"doctor"}, 0},
+		{[]string{"auth", "logout", "openai-subscription", "unexpected"}, 1},
+		{[]string{"version"}, 0},
+		{[]string{"doctor"}, 0},
 	} {
 		if exitCode := app.Run(test.args); exitCode != test.code {
 			t.Errorf("Run(%q) exit code = %d, want %d", test.args, exitCode, test.code)

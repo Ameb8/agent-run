@@ -27,8 +27,10 @@ func ValidateExtensions(snapshot *Snapshot) error {
 	return nil
 }
 
-var extensionImport = regexp.MustCompile(`(?m)(?:\bimport\s*(?:[^'";]*?\s+from\s*)?|\bexport\s+(?:[^'";]*?\s+from\s*)?|\bimport\s*\(|\brequire\s*\()\s*['"]([^'"]+)['"]`)
-var extensionDynamicImport = regexp.MustCompile(`(?m)\b(?:import|require)\s*\(\s*([^)]*)\)`)
+var (
+	extensionImport        = regexp.MustCompile(`(?m)(?:\bimport\s*(?:[^'";]*?\s+from\s*)?|\bexport\s+(?:[^'";]*?\s+from\s*)?|\bimport\s*\(|\brequire\s*\()\s*['"]([^'"]+)['"]`)
+	extensionDynamicImport = regexp.MustCompile(`(?m)\b(?:import|require)\s*\(\s*([^)]*)\)`)
+)
 
 func validateExtensionDirectory(root string) error {
 	root, err := filepath.EvalSymlinks(root)

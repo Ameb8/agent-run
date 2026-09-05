@@ -183,6 +183,7 @@ func (f definitionFixture) definition(content string) { f.write("agents/reviewer
 func (f definitionFixture) resolution() Resolution {
 	return Resolution{DefinitionPath: f.definitionPath, PackageRoot: f.packageRoot}
 }
+
 func assertDefinitionValidation(t *testing.T, err error, fragment string) {
 	t.Helper()
 	var commandErr *contract.CommandError
@@ -194,6 +195,7 @@ func assertDefinitionValidation(t *testing.T, err error, fragment string) {
 func validDefinition() string {
 	return "schema_version: 1\nname: reviewer\nmodel:\n  provider: openai-subscription\n  model: x\npermission: read-only\nprompt:\n  template: prompts/main.tmpl\n"
 }
+
 func replaceTopLevel(original, replacement string) string {
 	lines := strings.Split(original, "\n")
 	key := strings.Split(replacement, ":")[0] + ":"

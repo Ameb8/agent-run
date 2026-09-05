@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +21,7 @@ import (
 	"github.com/Ameb8/agent-run/internal/agent"
 	"github.com/Ameb8/agent-run/internal/auth"
 	"github.com/Ameb8/agent-run/internal/contract"
+	"github.com/Ameb8/agent-run/internal/execution"
 	"github.com/Ameb8/agent-run/internal/provider"
 	agentruntime "github.com/Ameb8/agent-run/internal/runtime"
 )
@@ -43,12 +45,19 @@ type App struct {
 	prepareProvider   func(contract.Model, func(string) (string, bool), auth.Handle) (*provider.Transport, error)
 	runtimeIdentity   contract.RuntimeIdentity
 	activeRun         *runFacts
+	runExecutor       runExecutor
 }
 
 type runFacts struct {
 	agent   *contract.PackageIdentity
 	model   *contract.ModelIdentity
 	runtime contract.RuntimeIdentity
+	result  any
+	turns   int
+}
+
+type runExecutor interface {
+	Execute(context.Context, execution.AdapterRequest) execution.Outcome
 }
 
 var fallbackRunSequence uint64
@@ -81,6 +90,7 @@ func NewWithWriters(stdout, stderr io.Writer) *App {
 	verifier, err := agentruntime.NewVerifier(agentruntime.NewDockerInspector(), agentruntime.BuildVersion)
 	if err == nil {
 		app.runtimeVerifier = verifier
+		app.runExecutor = execution.Adapter{CreateProcess: execution.DockerProcessFactory(agentruntime.NewDockerSandbox(*verifier)), Resolver: hostResolver{}}
 		app.runtimeDoctor = agentruntime.NewDoctor(*verifier)
 		app.subscriptionLogin = agentruntime.NewSubscriptionLogin(*verifier, os.Stdin, stdout, stderr)
 	} else if app.authSetupError == nil {
@@ -88,6 +98,12 @@ func NewWithWriters(stdout, stderr io.Writer) *App {
 	}
 	app.commands = app.registeredCommands()
 	return app
+}
+
+type hostResolver struct{}
+
+func (hostResolver) LookupNetIP(ctx context.Context, network, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, network, host)
 }
 
 // Run dispatches a command. Diagnostics only ever go to stderr; stdout is
@@ -129,11 +145,12 @@ func (a *App) runAndEmit(args []string) int {
 	}
 	if err == nil {
 		result.Status = contract.RunStatusSuccess
-		result.Result = ""
+		result.Result = facts.result
 	} else {
 		result.Status = contract.RunStatusFailure
 		result.ErrorType, result.Error = runError(err)
 	}
+	result.TurnsUsed = facts.turns
 	if encodeErr := json.NewEncoder(a.stdout).Encode(result); encodeErr != nil {
 		// stdout is the contract transport; an unwritable stream is necessarily
 		// an invocation failure and cannot safely be represented on that stream.
@@ -351,7 +368,8 @@ func (a *App) run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := agent.RenderPrompt(snapshot.Definition, inputs); err != nil {
+	prompt, err := agent.RenderPrompt(snapshot.Definition, inputs)
+	if err != nil {
 		return err
 	}
 	// Runtime verification happens after static package validation but before any
@@ -370,9 +388,11 @@ func (a *App) run(args []string) error {
 	// execution adapter consumes this run-local configuration when it creates
 	// the pinned-runtime container; no mutable package or user Pi state is ever
 	// consulted to discover skills.
-	if _, err := agentruntime.GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot); err != nil {
+	piConfiguration, err := agentruntime.GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
+	if err != nil {
 		return err
 	}
+	piConfiguration.Model = snapshot.Definition.Agent.Model.Model
 	// Read extension credentials only after all static validation and runtime
 	// checks, immediately before provider/sandbox setup. The returned value is
 	// run-local and will be supplied to the Docker sandbox by the execution
@@ -392,10 +412,28 @@ func (a *App) run(args []string) error {
 			return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "subscription authentication storage is unavailable"}
 		}
 	}
-	if _, err := a.prepareProvider(snapshot.Definition.Agent.Model, a.lookupEnv, subscription); err != nil {
+	transport, err := a.prepareProvider(snapshot.Definition.Agent.Model, a.lookupEnv, subscription)
+	if err != nil {
 		return environment.Redactor().RedactError(err)
 	}
-	return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "command is not implemented"}
+	if a.runExecutor == nil {
+		return &contract.CommandError{Category: contract.ErrorConfiguration, Message: "execution adapter is unavailable"}
+	}
+	outcome := a.runExecutor.Execute(context.Background(), execution.AdapterRequest{
+		Workspace: resolution.Workspace, Resources: scope.Resources, Configuration: scope.Configuration, Temporary: scope.Temporary,
+		Permission: snapshot.Definition.Agent.Permission, WorkspacePackage: resolution.Origin == contract.PackageOriginWorkspace,
+		Environment: environment, Pi: piConfiguration, Prompt: prompt, Network: snapshot.Definition.Agent.Network,
+		MaxTurns: snapshot.Definition.Agent.Limits.MaxTurns, Timeout: time.Duration(snapshot.Definition.Agent.Limits.TimeoutS) * time.Second,
+		Transport: transport, Validator: snapshot.OutputValidator, SelectedProvider: snapshot.Definition.Agent.Model.Provider,
+	})
+	if a.activeRun != nil {
+		a.activeRun.result = outcome.Result
+		a.activeRun.turns = outcome.TurnsUsed
+	}
+	if outcome.Success() {
+		return nil
+	}
+	return &contract.CommandError{Category: outcome.ErrorType, Message: outcome.Error}
 }
 
 // runOptions separates invocation-only flags from the static package

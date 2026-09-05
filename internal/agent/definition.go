@@ -295,6 +295,7 @@ func within(root, path string) bool {
 func simpleName(name string) bool {
 	return simpleID.MatchString(name)
 }
+
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -303,6 +304,7 @@ func contains(values []string, target string) bool {
 	}
 	return false
 }
+
 func uniqueIdentifiers(field string, values []string, valid func(string) bool) error {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
