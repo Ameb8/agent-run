@@ -56,6 +56,9 @@ jobs:
       - name: Build and inspect private runtime
         run: ARCH=${{ matrix.arch }} task runtime:verify
 
+      - name: Run pinned Pi RPC integration tests
+        run: task test:docker
+
   bundle-assembly:
     name: Offline bundle assembly checks
     runs-on: ubuntu-latest
