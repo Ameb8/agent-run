@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -39,10 +40,42 @@ func TestOpenAICompatibleSendsCredentialOnlyThroughConstrainedTransport(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if got := transport.Endpoint(); strings.Contains(got, canary) {
 		t.Fatalf("endpoint exposed credential: %q", got)
 	}
+}
+
+func TestSubscriptionTransportOverridesRuntimeAccountHeaderFromHostCredential(t *testing.T) {
+	root := t.TempDir()
+	store, err := auth.NewStoreAt(filepath.Join(root, "agentrun"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"chatgpt_account_id":"host-account"}}`))
+	token := "e30." + claims + ".signature"
+	if err := store.Replace([]byte(`{"openai-codex":{"access":"` + token + `"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, err := newOpenAISubscription("https://subscription.test/codex", handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Header.Get("chatgpt-account-id"); got != "host-account" {
+			t.Fatalf("account header = %q", got)
+		}
+		return response(http.StatusOK, ""), nil
+	})
+	result, err := transport.Do(context.Background(), http.MethodPost, "responses", nil, http.Header{"chatgpt-account-id": {"sandbox-account"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = result.Body.Close()
 }
 
 func TestPreparePreservesRequestedProviderAndModel(t *testing.T) {
@@ -102,7 +135,7 @@ func TestTransportAllowsSameOriginRedirectAndRejectsUserInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	_, err = transport.Do(context.Background(), http.MethodGet, "http://user:password@example.test/v1", nil, nil)
 	assertCategory(t, err, contract.ErrorProvider)
 }
@@ -165,7 +198,7 @@ func TestSubscriptionTransportUsesManagedHandleWithoutExposingCredential(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	// The credential is not copied into an environment variable while building
 	// the transport, the only process-visible channel extensions could inspect.
 	for _, entry := range os.Environ() {

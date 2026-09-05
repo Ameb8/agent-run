@@ -50,17 +50,20 @@ type bridgeResponse struct {
 // ProviderBridge gates every provider operation before Transport.Do.  Turns
 // are incremented only after Do has returned a successful HTTP response, so a
 // truncated response body still consumes its turn while rejected requests do
-// not.  It accepts exactly one peer: the generated extension is the sole
-// consumer of this private per-run socket.
+// not. It accepts one request-scoped connection at a time from the generated
+// extension, which is the sole consumer of this private per-run socket.
 type ProviderBridge struct {
-	listener  net.Listener
-	transport *provider.Transport
-	maxTurns  int
+	listener   net.Listener
+	transport  *provider.Transport
+	maxTurns   int
+	socketPath string
+	requestMu  sync.Mutex
 
-	mu     sync.Mutex
-	turns  int
-	err    error
-	closed bool
+	mu         sync.Mutex
+	turns      int
+	err        error
+	closed     bool
+	connection net.Conn
 }
 
 func NewProviderBridge(temporary string, transport *provider.Transport, maxTurns int) (*ProviderBridge, error) {
@@ -78,6 +81,22 @@ func NewProviderBridge(temporary string, transport *provider.Transport, maxTurns
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = listener.Close()
 		return nil, err
+	}
+	bridge, err := NewProviderBridgeWithListener(listener, transport, maxTurns)
+	if err != nil {
+		_ = listener.Close()
+		_ = os.Remove(path)
+		return nil, err
+	}
+	bridge.socketPath = path
+	return bridge, nil
+}
+
+// NewProviderBridgeWithListener is the deterministic transport seam used by
+// protocol tests. Production uses NewProviderBridge with a private Unix socket.
+func NewProviderBridgeWithListener(listener net.Listener, transport *provider.Transport, maxTurns int) (*ProviderBridge, error) {
+	if listener == nil || transport == nil || maxTurns <= 0 {
+		return nil, &contract.CommandError{Category: contract.ErrorConfiguration, Message: "provider bridge is unavailable"}
 	}
 	return &ProviderBridge{listener: listener, transport: transport, maxTurns: maxTurns}, nil
 }
@@ -101,34 +120,50 @@ func (b *ProviderBridge) setErr(err error) {
 	b.mu.Unlock()
 }
 
-// Serve blocks until context cancellation, listener closure, or peer failure.
+// Serve accepts successive request-scoped peers until context cancellation,
+// listener closure, or peer failure.
 // A malformed peer frame is an execution failure; raw request/response data is
 // intentionally never incorporated into its error.
 func (b *ProviderBridge) Serve(ctx context.Context) error {
 	if b == nil || b.listener == nil {
 		return errors.New("provider bridge unavailable")
 	}
-	accepted := make(chan net.Conn, 1)
+	stopped := make(chan struct{})
 	go func() {
-		c, err := b.listener.Accept()
-		if err == nil {
-			accepted <- c
-		} else {
-			close(accepted)
+		select {
+		case <-ctx.Done():
+			_ = b.Close()
+		case <-stopped:
 		}
 	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case c, ok := <-accepted:
-		if !ok {
+	defer close(stopped)
+	for {
+		c, err := b.listener.Accept()
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			b.mu.Lock()
+			closed := b.closed
+			b.mu.Unlock()
+			if closed {
+				return nil
+			}
 			return errors.New("provider bridge closed")
 		}
-		defer c.Close()
-		return b.servePeer(ctx, c)
+		b.mu.Lock()
+		b.connection = c
+		b.mu.Unlock()
+		err = b.servePeer(ctx, c)
+		_ = c.Close()
+		b.mu.Lock()
+		if b.connection == c {
+			b.connection = nil
+		}
+		b.mu.Unlock()
+		if err != nil {
+			return err
+		}
 	}
 }
 
@@ -172,10 +207,15 @@ func readBridgeLine(reader *bufio.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(line) >= 2 && line[len(line)-2] == '\r' {
+		return nil, errors.New("invalid frame")
+	}
 	return line[:len(line)-1], nil
 }
 
 func (b *ProviderBridge) forward(ctx context.Context, request bridgeRequest) bridgeResponse {
+	b.requestMu.Lock()
+	defer b.requestMu.Unlock()
 	result := bridgeResponse{ID: request.ID}
 	body, err := base64.StdEncoding.DecodeString(request.Body)
 	if err != nil {
@@ -200,7 +240,7 @@ func (b *ProviderBridge) forward(ctx context.Context, request bridgeRequest) bri
 	b.mu.Lock()
 	b.turns++
 	b.mu.Unlock()
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, readErr := io.ReadAll(io.LimitReader(response.Body, maxBridgeFrameBytes+1))
 	if readErr != nil || len(payload) > maxBridgeFrameBytes {
 		result.Accepted = true
@@ -235,12 +275,17 @@ func (b *ProviderBridge) Close() error {
 		return nil
 	}
 	b.closed = true
+	connection := b.connection
 	b.mu.Unlock()
+	if connection != nil {
+		_ = connection.Close()
+	}
 	if b.listener == nil {
 		return nil
 	}
-	path := b.listener.Addr().String()
 	err := b.listener.Close()
-	_ = os.Remove(path)
+	if b.socketPath != "" {
+		_ = os.Remove(b.socketPath)
+	}
 	return err
 }

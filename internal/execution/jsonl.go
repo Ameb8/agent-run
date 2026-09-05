@@ -7,6 +7,8 @@ import (
 	"io"
 )
 
+var ErrJSONLFrameTooLarge = errors.New("RPC frame exceeds limit")
+
 // MaxRPCFrameBytes bounds untrusted Pi control-plane frames independently of
 // provider payloads. JSONL is strict: CRLF and unterminated final frames are
 // rejected so a truncated child stream cannot be mistaken for a response.
@@ -26,10 +28,13 @@ func (j *JSONL) Read(value any) error {
 		return errors.New("RPC reader unavailable")
 	}
 	line, err := j.r.ReadBytes('\n')
+	if errors.Is(err, bufio.ErrBufferFull) || len(line) > MaxRPCFrameBytes {
+		return ErrJSONLFrameTooLarge
+	}
 	if err != nil {
 		return errors.New("truncated RPC frame")
 	}
-	if len(line) < 2 || len(line) > MaxRPCFrameBytes || line[len(line)-2] == '\r' {
+	if len(line) < 2 || line[len(line)-2] == '\r' {
 		return errors.New("invalid RPC frame")
 	}
 	if err := json.Unmarshal(line[:len(line)-1], value); err != nil {
@@ -43,7 +48,10 @@ func (j *JSONL) Write(value any) error {
 		return errors.New("RPC writer unavailable")
 	}
 	encoded, err := json.Marshal(value)
-	if err != nil || len(encoded) > MaxRPCFrameBytes {
+	if len(encoded) > MaxRPCFrameBytes {
+		return ErrJSONLFrameTooLarge
+	}
+	if err != nil {
 		return errors.New("invalid RPC frame")
 	}
 	if _, err = j.w.Write(encoded); err != nil {

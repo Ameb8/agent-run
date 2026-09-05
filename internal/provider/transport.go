@@ -8,6 +8,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,11 +25,12 @@ const subscriptionEndpoint = "https://chatgpt.com/backend-api/codex"
 // Transport sends requests for exactly one selected provider. Credentials are
 // retained only in this host-side value; neither Endpoint nor Do exposes them.
 type Transport struct {
-	endpoint *url.URL
-	origin   origin
-	client   *http.Client
-	apiKey   string
-	model    contract.ModelIdentity
+	endpoint  *url.URL
+	origin    origin
+	client    *http.Client
+	apiKey    string
+	model     contract.ModelIdentity
+	accountID string
 }
 
 // Prepare selects the host-side transport from a validated agent declaration.
@@ -114,7 +116,12 @@ func newOpenAISubscription(endpoint string, handle auth.Handle) (*Transport, err
 	if err != nil || token == "" {
 		return nil, authentication("OpenAI subscription authentication is required")
 	}
-	return newTransport(endpoint, token)
+	transport, err := newTransport(endpoint, token)
+	if err != nil {
+		return nil, err
+	}
+	transport.accountID = subscriptionAccountID(token)
+	return transport, nil
 }
 
 func newTransport(endpoint, apiKey string) (*Transport, error) {
@@ -175,7 +182,7 @@ func (t *Transport) Do(ctx context.Context, method, target string, body io.Reade
 		return nil, providerFailure("model provider request is invalid")
 	}
 	for name, values := range headers {
-		if strings.EqualFold(name, "Authorization") {
+		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "chatgpt-account-id") {
 			continue
 		}
 		for _, value := range values {
@@ -183,6 +190,9 @@ func (t *Transport) Do(ctx context.Context, method, target string, body io.Reade
 		}
 	}
 	req.Header.Set("Authorization", "Bearer "+t.apiKey)
+	if t.accountID != "" {
+		req.Header.Set("chatgpt-account-id", t.accountID)
+	}
 	response, err := t.client.Do(req)
 	if err != nil {
 		var category *contract.CommandError
@@ -192,14 +202,36 @@ func (t *Transport) Do(ctx context.Context, method, target string, body io.Reade
 		return nil, providerFailure("model provider request failed")
 	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return nil, authentication("model provider rejected credentials")
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return nil, providerFailure("model provider returned an unsuccessful response")
 	}
 	return response, nil
+}
+
+func subscriptionAccountID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]json.RawMessage
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	var authClaim struct {
+		AccountID string `json:"chatgpt_account_id"`
+	}
+	if json.Unmarshal(claims["https://api.openai.com/auth"], &authClaim) != nil {
+		return ""
+	}
+	return authClaim.AccountID
 }
 
 func (t *Transport) resolve(target string) (*url.URL, error) {
