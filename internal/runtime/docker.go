@@ -81,7 +81,10 @@ type SandboxRequest struct {
 	Permission       contract.Permission
 	WorkspacePackage bool
 	Environment      Environment
-	Command          []string
+	// RuntimeEnvironment contains only AgentRun-owned, non-secret variables
+	// required by the pinned runtime. Caller values remain in Environment.
+	RuntimeEnvironment []string
+	Command            []string
 }
 
 // Container is a created, but not started, sandbox. Keeping construction and
@@ -93,8 +96,9 @@ type Container struct {
 }
 
 // AttachedProcess is Docker's attached stdio stream for a container init
-// process. Docker retains ownership of the process tree; Close only closes
-// the client-side pipes and Container.Terminate remains the kill operation.
+// process. Docker retains ownership of the process tree; Close reaps only the
+// local Docker attach client and Container.Terminate remains the container
+// process-tree kill operation.
 type AttachedProcess struct {
 	Stdin  io.WriteCloser
 	Stdout io.ReadCloser
@@ -148,6 +152,10 @@ func (p *AttachedProcess) Close() {
 	}
 	if p.Stderr != nil {
 		_ = p.Stderr.Close()
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+		_ = p.cmd.Wait()
 	}
 }
 
@@ -206,10 +214,12 @@ type DockerSandbox struct {
 	command  commandRunner
 	goos     string
 	arch     string
+	uid      int
+	gid      int
 }
 
 func NewDockerSandbox(verifier Verifier) DockerSandbox {
-	return DockerSandbox{Verifier: verifier, command: execRunner{}, goos: runtime.GOOS, arch: runtime.GOARCH}
+	return DockerSandbox{Verifier: verifier, command: execRunner{}, goos: runtime.GOOS, arch: runtime.GOARCH, uid: os.Getuid(), gid: os.Getgid()}
 }
 
 // Create verifies the Linux Docker Engine and private image, then creates a
@@ -367,8 +377,9 @@ func (s DockerSandbox) createArgs(workspace, resources, configuration, temporary
 		workspaceOptions += ",readonly"
 	}
 	args := []string{
-		"create", "--pull=never", "--network", "none", "--read-only",
+		"create", "--pull=never", "--interactive", "--network", "none", "--read-only",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "256",
+		"--user", strconv.Itoa(s.uid) + ":" + strconv.Itoa(s.gid),
 		"--workdir", workspaceMount,
 		"--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m",
 		"--mount", workspaceOptions,
@@ -380,6 +391,12 @@ func (s DockerSandbox) createArgs(workspace, resources, configuration, temporary
 		args = append(args, "--mount", "type=tmpfs,dst=/workspace/.agentrun,tmpfs-mode=0755")
 	}
 	for _, entry := range request.Environment.Entries() {
+		args = append(args, "--env", entry)
+	}
+	for _, entry := range request.RuntimeEnvironment {
+		if entry == "" || strings.ContainsRune(entry, '\x00') || !strings.ContainsRune(entry, '=') {
+			return nil, configurationError("runtime environment is invalid")
+		}
 		args = append(args, "--env", entry)
 	}
 	architecture := s.arch

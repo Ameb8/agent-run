@@ -23,7 +23,7 @@ docker buildx build --load --file "${runtime_dir}/Dockerfile" --platform "linux/
   --build-arg "PI_TARBALL_INTEGRITY=${PI_TARBALL_INTEGRITY}" \
   --build-arg "DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT}" "${runtime_dir}"
 
-test "$(docker run --rm --network none "${image_tag}" pi --version)" = "${pi_version}"
+test "$(docker run --rm --network none "${image_tag}" pi --version 2>&1)" = "${pi_version}"
 test "$(docker run --rm --network none "${image_tag}" node --version)" = "${javascript_version}"
 docker run --rm --network none "${image_tag}" sh -ec '
   command -v bash

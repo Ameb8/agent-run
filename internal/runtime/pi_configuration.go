@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,10 +9,11 @@ import (
 	"strings"
 
 	"github.com/Ameb8/agent-run/internal/agent"
+	"github.com/Ameb8/agent-run/internal/contract"
 )
 
 const (
-	piAgentDirectory      = configurationMount + "/pi"
+	piAgentDirectory      = temporaryMount + "/pi-home"
 	piSessionDirectory    = temporaryMount + "/pi-sessions"
 	piSettingsFile        = "settings.json"
 	piCodingAgentDir      = "PI_CODING_AGENT_DIR"
@@ -50,6 +52,8 @@ type PiConfiguration struct {
 	ActiveTools     []string
 	ToolAdapter     string
 	ProviderAdapter string
+	Provider        string
+	Model           string
 }
 
 // GenerateProviderAdapter writes AgentRun's infrastructure extension.  Its
@@ -57,7 +61,7 @@ type PiConfiguration struct {
 // configured provider endpoint; consequently neither credentials nor a host
 // route can enter Pi.  The protocol is intentionally JSONL and is consumed by
 // execution.ProviderBridge.
-func GenerateProviderAdapter(configuration string, model string) (string, error) {
+func GenerateProviderAdapter(configuration string, selected contract.Model) (string, error) {
 	configuration, err := privateDirectory(configuration, "generated configuration")
 	if err != nil {
 		return "", err
@@ -65,35 +69,103 @@ func GenerateProviderAdapter(configuration string, model string) (string, error)
 	if err := os.MkdirAll(filepath.Join(configuration, "pi"), 0o700); err != nil {
 		return "", configurationError("create provider adapter directory: %v", err)
 	}
-	if strings.TrimSpace(model) == "" {
+	if strings.TrimSpace(selected.Model) == "" {
 		return "", configurationError("provider model is required")
 	}
-	encodedModel, err := json.Marshal(model)
+	encodedModel, err := json.Marshal(selected.Model)
 	if err != nil {
 		return "", configurationError("encode provider model: %v", err)
 	}
-	source := `// AgentRun-owned Pi 0.74 provider adapter. No credentials or provider URL live here.
+	streamImport, streamName, api, placeholder := "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/openai-responses.js", "streamSimpleOpenAIResponses", "openai-responses", "agentrun-private-bridge"
+	if selected.Provider == contract.ProviderOpenAISubscription {
+		streamImport, streamName, api = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/openai-codex-responses.js", "streamSimpleOpenAICodexResponses", "openai-codex-responses"
+		claims := base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"chatgpt_account_id":"agentrun"}}`))
+		placeholder = "e30." + claims + ".agentrun"
+	} else if selected.Provider != contract.ProviderOpenAICompatible {
+		return "", configurationError("provider is unsupported")
+	}
+	encodedImport, _ := json.Marshal(streamImport)
+	encodedStream, _ := json.Marshal(streamName)
+	encodedAPI, _ := json.Marshal(api)
+	encodedPlaceholder, _ := json.Marshal(placeholder)
+	source := `// AgentRun-owned Pi 0.74 provider adapter. No credential or provider origin enters this file.
+import http from "node:http";
 import net from "node:net";
-const socket = "/agentrun/tmp/provider.sock";
+import { setGlobalDispatcher, EnvHttpProxyAgent } from "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/undici/index.js";
+import * as providerStreams from ` + string(encodedImport) + `;
+const providerSocket = "/agentrun/tmp/provider.sock";
+const egressSocket = "/agentrun/tmp/egress.sock";
+const providerPort = 43123;
+const egressPort = 43124;
+const maxFrameBytes = 32 * 1024 * 1024;
 const model = ` + string(encodedModel) + `;
-function bridge(request: any): Promise<any> {
+const api = ` + string(encodedAPI) + `;
+const placeholder = ` + string(encodedPlaceholder) + `;
+const streamSimple = (providerStreams as any)[` + string(encodedStream) + `];
+
+function exchange(request: any): Promise<any> {
   return new Promise((resolve, reject) => {
-    const peer = net.createConnection(socket); let input = "";
-    peer.once("error", reject);
-    peer.on("data", (chunk) => { input += chunk.toString("utf8"); const lf = input.indexOf("\n"); if (lf >= 0) { peer.end(); try { resolve(JSON.parse(input.slice(0, lf))); } catch (e) { reject(e); } } });
+    const peer = net.createConnection(providerSocket); let input = ""; let settled = false;
+    const fail = () => { if (!settled) { settled = true; peer.destroy(); reject(new Error("AgentRun provider bridge failed")); } };
+    peer.once("error", fail);
+    peer.on("data", (chunk) => {
+      input += chunk.toString("utf8");
+      if (Buffer.byteLength(input) > maxFrameBytes) return fail();
+      const lf = input.indexOf("\n");
+      if (lf < 0) return;
+      if (input.indexOf("\n", lf + 1) >= 0 || input[lf - 1] === "\r") return fail();
+      try { const reply = JSON.parse(input.slice(0, lf)); settled = true; peer.end(); resolve(reply); } catch { fail(); }
+    });
+    peer.once("end", () => { if (!settled) fail(); });
     peer.on("connect", () => peer.write(JSON.stringify(request) + "\n"));
   });
 }
-export default function(pi: any) {
-  pi.registerProvider({
-    id: "agentrun", name: "AgentRun", apiKey: "agentrun-private-bridge",
-    models: [{ id: model, name: model }],
-    streamSimple: async (request: any) => {
-      const body = Buffer.from(JSON.stringify(request), "utf8").toString("base64");
-      const reply = await bridge({id: crypto.randomUUID(), method:"POST", target:"responses", headers:{"content-type":["application/json"]}, body});
-      if (!reply.accepted) throw new Error("AgentRun provider bridge rejected request");
-      return JSON.parse(Buffer.from(reply.body, "base64").toString("utf8"));
-    },
+
+function readBody(request: any): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []; let size = 0;
+    request.on("data", (chunk: Buffer) => { size += chunk.length; if (size > maxFrameBytes) { request.destroy(); reject(new Error("provider request exceeds limit")); } else chunks.push(chunk); });
+    request.once("end", () => resolve(Buffer.concat(chunks)));
+    request.once("error", reject);
+  });
+}
+
+const providerServer = http.createServer(async (request, response) => {
+  try {
+    const body = await readBody(request);
+    const headers: Record<string, string[]> = {};
+    for (const [name, value] of Object.entries(request.headers)) if (value !== undefined) headers[name] = Array.isArray(value) ? value : [value];
+    const target = (request.url || "/").replace(/^\//, "");
+    const reply = await exchange({ id: crypto.randomUUID(), method: request.method || "POST", target, headers, body: body.toString("base64") });
+    if (!reply.accepted) throw new Error("provider request rejected");
+    for (const [name, values] of Object.entries(reply.headers || {})) response.setHeader(name, values as string[]);
+    response.writeHead(reply.status); response.end(Buffer.from(reply.body, "base64"));
+  } catch { if (!response.headersSent) response.writeHead(502); response.end(); }
+});
+
+const egressServer = net.createServer((client) => {
+  const upstream = net.createConnection(egressSocket);
+  client.pipe(upstream); upstream.pipe(client);
+  const close = () => { client.destroy(); upstream.destroy(); };
+  client.once("error", close); upstream.once("error", close);
+});
+
+function listen(server: any, port: number): Promise<void> {
+  return new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
+}
+
+export default async function(pi: any) {
+  await listen(providerServer, providerPort);
+  await listen(egressServer, egressPort);
+  process.env.HTTP_PROXY = "http://127.0.0.1:" + egressPort;
+  process.env.HTTPS_PROXY = process.env.HTTP_PROXY;
+  process.env.NO_PROXY = "127.0.0.1,localhost";
+  setGlobalDispatcher(new EnvHttpProxyAgent());
+  pi.on("session_shutdown", () => { providerServer.close(); egressServer.close(); });
+  pi.registerProvider("agentrun", {
+    name: "AgentRun", baseUrl: "http://127.0.0.1:" + providerPort, apiKey: placeholder, api,
+    models: [{ id: model, name: model, api, reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 32000 }],
+    streamSimple: (selectedModel: any, context: any, options: any) => streamSimple(selectedModel, context, { ...options, apiKey: placeholder, transport: "sse", maxRetries: 0 }),
   });
 }
 `
@@ -196,9 +268,7 @@ func GeneratePiConfiguration(configuration, temporary, resources string, snapsho
 		}
 		result.Extensions = append(result.Extensions, containerPath)
 	}
-	for _, name := range snapshot.Definition.Agent.Tools.Allow {
-		result.ActiveTools = append(result.ActiveTools, name)
-	}
+	result.ActiveTools = append(result.ActiveTools, snapshot.Definition.Agent.Tools.Allow...)
 	if containsTool(result.ActiveTools, "shell") {
 		adapter := filepath.Join(agentDirectory, piToolAdapterFile)
 		if err := os.WriteFile(adapter, []byte(stableToolAdapter), 0o600); err != nil {
@@ -297,6 +367,12 @@ func (c PiConfiguration) Command() []string {
 		// Must precede every package extension: provider registration is runtime
 		// infrastructure and has to fail before any model operation.
 		command = append(command, "--extension", c.ProviderAdapter)
+	}
+	if c.Provider != "" {
+		command = append(command, "--provider", c.Provider)
+	}
+	if c.Model != "" {
+		command = append(command, "--model", c.Model)
 	}
 	// Pi receives only the generated adapter and the immutable, declared
 	// extension entry points. --no-extensions still disables all discovery

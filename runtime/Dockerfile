@@ -28,7 +28,7 @@ RUN tarball="$(npm pack --ignore-scripts --silent "${PI_PACKAGE}@${PI_VERSION}")
     && test "${PI_TARBALL_INTEGRITY}" = "$(node -e 'const fs = require("node:fs"); const crypto = require("node:crypto"); process.stdout.write("sha512-" + crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"));' "${tarball}")" \
     && npm install --global --omit=dev --ignore-scripts --no-audit --no-fund "${tarball}" \
     && rm -f "${tarball}" \
-    && test "$(pi --version)" = "${PI_VERSION}" \
+    && test "$(pi --version 2>&1)" = "${PI_VERSION}" \
     && test "$(node --version)" = "v${NODE_VERSION}"
 
 RUN mkdir -p /usr/share/agentrun \

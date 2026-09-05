@@ -3,11 +3,11 @@
   "images": {
     "amd64": {
       "image": "agentrun-runtime:private-amd64",
-      "image_digest": "sha256:68743e5dc0aed0db80ca1d5275d68919b45c1f2ad8bf85f7823f4d47fbaea659"
+      "image_digest": "sha256:6aed79bbe368c25e141363e906e585ada0f7ba169421dc439fbec994e04cc456"
     },
     "arm64": {
       "image": "agentrun-runtime:private-arm64",
-      "image_digest": "sha256:2ece07549015f9f89019b2ffb8d7f96cb53f55fe90ee7cfbf7060dc86bea3154"
+      "image_digest": "sha256:183163d6af422c1a5e73d6eedd06d948b0a6bf4c3397e8f166cc60b45d18a77d"
     }
   },
   "pi": {

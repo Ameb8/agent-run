@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -49,6 +50,8 @@ func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
 		command:  runner,
 		goos:     "linux",
 		arch:     "amd64",
+		uid:      os.Getuid(),
+		gid:      os.Getgid(),
 	}
 	container, err := sandbox.Create(context.Background(), SandboxRequest{
 		Workspace: workspace, Resources: resources, Configuration: configuration, Temporary: temporary, Permission: contract.PermissionReadOnly,
@@ -63,8 +66,8 @@ func TestDockerSandboxCreatesHardenedBoundary(t *testing.T) {
 	create := runner.calls[3]
 	got := strings.Join(create.args, " ")
 	for _, required := range []string{
-		"create --pull=never --network none --read-only", "--cap-drop ALL", "--security-opt no-new-privileges:true",
-		"--pids-limit 256", "bind-propagation=rprivate,bind-recursive=disabled,readonly",
+		"create --pull=never --interactive --network none --read-only", "--cap-drop ALL", "--security-opt no-new-privileges:true",
+		"--pids-limit 256", "--user " + strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()), "bind-propagation=rprivate,bind-recursive=disabled,readonly",
 		"dst=/agentrun/resources,readonly,bind-propagation=rprivate,bind-recursive=disabled",
 		"dst=/agentrun/config,readonly,bind-propagation=rprivate,bind-recursive=disabled",
 		"dst=/agentrun/tmp,bind-propagation=rprivate,bind-recursive=disabled",

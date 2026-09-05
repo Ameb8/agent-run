@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"github.com/Ameb8/agent-run/internal/agent"
+	"github.com/Ameb8/agent-run/internal/contract"
 )
 
 func TestGeneratePiConfigurationExposesOnlyOrderedSelectedSkills(t *testing.T) {
 	scope, snapshot := piConfigurationFixture(t, []string{"second", "first"}, true)
-	defer scope.Close()
-	defer snapshot.Close()
+	defer func() { _ = scope.Close() }()
+	defer func() { _ = snapshot.Close() }()
 
 	configuration, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
 	if err != nil {
@@ -56,18 +57,18 @@ func TestGeneratePiConfigurationExposesOnlyOrderedSelectedSkills(t *testing.T) {
 	if strings.Contains(command, "unselected") || strings.Contains(command, ".pi") {
 		t.Fatalf("command exposes an unselected or discovered resource: %q", configuration.Command())
 	}
-	if got := configuration.Environment(); !reflect.DeepEqual(got, []string{"PI_CODING_AGENT_DIR=/agentrun/config/pi", "PI_CODING_AGENT_SESSION_DIR=/agentrun/tmp/pi-sessions"}) {
+	if got := configuration.Environment(); !reflect.DeepEqual(got, []string{"PI_CODING_AGENT_DIR=/agentrun/tmp/pi-home", "PI_CODING_AGENT_SESSION_DIR=/agentrun/tmp/pi-sessions"}) {
 		t.Fatalf("environment = %q", got)
 	}
 }
 
 func TestGeneratePiConfigurationIsPrivatePerRun(t *testing.T) {
 	firstScope, firstSnapshot := piConfigurationFixture(t, []string{"first"}, false)
-	defer firstScope.Close()
-	defer firstSnapshot.Close()
+	defer func() { _ = firstScope.Close() }()
+	defer func() { _ = firstSnapshot.Close() }()
 	secondScope, secondSnapshot := piConfigurationFixture(t, []string{"second"}, false)
-	defer secondScope.Close()
-	defer secondSnapshot.Close()
+	defer func() { _ = secondScope.Close() }()
+	defer func() { _ = secondSnapshot.Close() }()
 	first, err := GeneratePiConfiguration(firstScope.Configuration, firstScope.Temporary, firstScope.Resources, firstSnapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -89,8 +90,8 @@ func TestGeneratePiConfigurationIsPrivatePerRun(t *testing.T) {
 
 func TestPiConfigurationActivatesExactlyDeclaredBuiltIns(t *testing.T) {
 	scope, snapshot := piConfigurationFixture(t, nil, false, "read", "grep", "shell")
-	defer scope.Close()
-	defer snapshot.Close()
+	defer func() { _ = scope.Close() }()
+	defer func() { _ = snapshot.Close() }()
 
 	configuration, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
 	if err != nil {
@@ -124,8 +125,8 @@ func TestPiConfigurationActivatesExactlyDeclaredBuiltIns(t *testing.T) {
 
 func TestPiConfigurationEmptyAllowlistExposesNoTools(t *testing.T) {
 	scope, snapshot := piConfigurationFixture(t, nil, false)
-	defer scope.Close()
-	defer snapshot.Close()
+	defer func() { _ = scope.Close() }()
+	defer func() { _ = snapshot.Close() }()
 
 	configuration, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
 	if err != nil {
@@ -142,8 +143,8 @@ func TestPiConfigurationEmptyAllowlistExposesNoTools(t *testing.T) {
 
 func TestGeneratePiConfigurationRejectsSnapshotOutsideMountedResources(t *testing.T) {
 	scope, snapshot := piConfigurationFixture(t, []string{"first"}, false)
-	defer scope.Close()
-	defer snapshot.Close()
+	defer func() { _ = scope.Close() }()
+	defer func() { _ = snapshot.Close() }()
 	_, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, t.TempDir(), snapshot)
 	if err == nil || !strings.Contains(err.Error(), "CONFIGURATION") {
 		t.Fatalf("error = %v, want CONFIGURATION", err)
@@ -152,8 +153,8 @@ func TestGeneratePiConfigurationRejectsSnapshotOutsideMountedResources(t *testin
 
 func TestPiConfigurationLoadsDeclaredExtensionsAndActivatesOnlyAllowlist(t *testing.T) {
 	scope, snapshot := piConfigurationExtensionFixture(t)
-	defer scope.Close()
-	defer snapshot.Close()
+	defer func() { _ = scope.Close() }()
+	defer func() { _ = snapshot.Close() }()
 
 	configuration, err := GeneratePiConfiguration(scope.Configuration, scope.Temporary, scope.Resources, snapshot)
 	if err != nil {
@@ -224,7 +225,7 @@ func TestGenerateProviderAdapterUsesOnlyPrivateBridge(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(configuration, "pi"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := GenerateProviderAdapter(configuration, "gpt-test")
+	adapter, err := GenerateProviderAdapter(configuration, contract.Model{Provider: contract.ProviderOpenAICompatible, Model: "gpt-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +237,7 @@ func TestGenerateProviderAdapterUsesOnlyPrivateBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(contents)
-	for _, required := range []string{"pi.registerProvider", "streamSimple", "/agentrun/tmp/provider.sock", "gpt-test"} {
+	for _, required := range []string{`pi.registerProvider("agentrun"`, "streamSimpleOpenAIResponses", "/agentrun/tmp/provider.sock", "/agentrun/tmp/egress.sock", "gpt-test", "127.0.0.1"} {
 		if !strings.Contains(source, required) {
 			t.Errorf("adapter missing %q", required)
 		}
@@ -244,6 +245,16 @@ func TestGenerateProviderAdapterUsesOnlyPrivateBridge(t *testing.T) {
 	for _, forbidden := range []string{"Authorization", "api.openai", "OPENAI_API_KEY"} {
 		if strings.Contains(source, forbidden) {
 			t.Errorf("adapter leaks provider configuration %q", forbidden)
+		}
+	}
+}
+
+func TestPiConfigurationSelectsOnlyAgentRunProviderAndModel(t *testing.T) {
+	configuration := PiConfiguration{ProviderAdapter: "/agentrun/config/pi/agentrun-provider.ts", Provider: "agentrun", Model: "gpt-test"}
+	command := strings.Join(configuration.Command(), "\x00")
+	for _, required := range []string{"--extension\x00/agentrun/config/pi/agentrun-provider.ts", "--provider\x00agentrun", "--model\x00gpt-test"} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("command %q missing %q", configuration.Command(), required)
 		}
 	}
 }
